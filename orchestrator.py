@@ -793,6 +793,56 @@ def _validate_data_creation_sql(sql: str) -> None:
             f"{preview}"
         )
 
+def _infer_latest_iso_date(*texts: Optional[str]) -> Optional[str]:
+    """
+    Extract the latest ISO-style date literal from the supplied text fragments.
+    This is used as a stable temporal anchor for historical seeded datasets.
+    """
+    dates: List[str] = []
+    for text in texts:
+        if not isinstance(text, str) or not text.strip():
+            continue
+        dates.extend(re.findall(r"\b(20\d{2}-\d{2}-\d{2})\b", text))
+    if not dates:
+        return None
+    return max(dates)
+
+def _uses_wall_clock_temporal_anchor(sql: Optional[str]) -> bool:
+    if not isinstance(sql, str) or not sql.strip():
+        return False
+    return bool(
+        re.search(r"\bCURRENT_DATE\b", sql, flags=re.IGNORECASE)
+        or re.search(r"\bCURRENT_TIMESTAMP\b", sql, flags=re.IGNORECASE)
+        or re.search(r"\bNOW\s*\(\s*\)", sql, flags=re.IGNORECASE)
+    )
+
+def _rewrite_wall_clock_temporal_references(sql: str, anchor_date: str) -> str:
+    """
+    Replace wall-clock temporal anchors with a deterministic dataset-derived date.
+    This keeps generated SQL aligned with historical sample data.
+    """
+    if not isinstance(sql, str) or not sql.strip():
+        return sql
+    rewritten = re.sub(
+        r"\bCURRENT_DATE\b",
+        f"DATE '{anchor_date}'",
+        sql,
+        flags=re.IGNORECASE,
+    )
+    rewritten = re.sub(
+        r"\bCURRENT_TIMESTAMP\b",
+        f"TIMESTAMP '{anchor_date} 00:00:00'",
+        rewritten,
+        flags=re.IGNORECASE,
+    )
+    rewritten = re.sub(
+        r"\bNOW\s*\(\s*\)",
+        f"TIMESTAMP '{anchor_date} 00:00:00'",
+        rewritten,
+        flags=re.IGNORECASE,
+    )
+    return rewritten
+
 from agents import (
     get_agent1_interviewq_llm_and_prompt,
     get_agent1_llm_and_prompt,
@@ -1050,6 +1100,30 @@ def orchestrate(
     agent2_sheets_creation = parsed2.get("data_creation_sheets")
     agent2_data_creation = agent2_sql_creation or parsed2.get("data_creation")
     answers_sql_map = parsed2["answers"]
+
+    temporal_anchor_date = _infer_latest_iso_date(
+        agent2_sql_creation if isinstance(agent2_sql_creation, str) else "",
+        case_block,
+        questions_raw,
+    )
+    if parser_subject == "sql" and temporal_anchor_date:
+        if _uses_wall_clock_temporal_anchor(agent2_sql_creation):
+            agent2_sql_creation = _rewrite_wall_clock_temporal_references(
+                agent2_sql_creation,
+                temporal_anchor_date,
+            )
+            parsed2["data_creation_sql"] = agent2_sql_creation
+            parsed2["data_creation"] = agent2_sql_creation
+            agent2_data_creation = agent2_sql_creation or agent2_data_creation
+
+        answers_sql_map = {
+            qid: (
+                _rewrite_wall_clock_temporal_references(sql, temporal_anchor_date)
+                if _uses_wall_clock_temporal_anchor(sql)
+                else sql
+            )
+            for qid, sql in answers_sql_map.items()
+        }
 
     # Parse questions and attach the matching SQL answer (if available)
     questions_raw_list = parse_questions_raw(questions_raw, answers_sql_map)

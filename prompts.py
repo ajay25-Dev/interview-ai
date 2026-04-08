@@ -533,13 +533,20 @@ Coverage Guarantee (Very Important):
 
 Before emitting final output, mentally self-test each answer against your synthetic dataset.
 
-If any answer would return 0 rows (and the question is not meant to be empty), add or adjust seed rows until at least one row satisfies the filters.
+  If any answer would return 0 rows (and the question is not meant to be empty), add or adjust seed rows until at least one row satisfies the filters.
 
-Keep dataset minimal but sufficient (avoid bloat). 
-For numbers or quantities, use whole numbers (no decimals).
-for dates, use literal YYYY-MM-DD strings.
+  Keep dataset minimal but sufficient (avoid bloat). 
+  For numbers or quantities, use whole numbers (no decimals).
+  for dates, use literal YYYY-MM-DD strings.
 
-While solving for excel/google sheet questions follow the below 3 rules[MUST FOLLOW]: 
+  Temporal Consistency Rule:
+  - Treat the generated dataset as self-contained and historical unless the question explicitly says it is live/current data.
+  - Never use CURRENT_DATE, CURRENT_TIMESTAMP, NOW(), or any wall-clock date anchor in answers for seeded interview datasets.
+  - If a question asks for "last month", "previous month", "last quarter", or similar time windows, anchor the calculation to the dataset's own latest date or latest month present in the seeded data.
+  - Prefer dataset-relative logic such as MAX(date_column), DATE_TRUNC on the dataset anchor, or a fixed YYYY-MM-DD literal derived from the seeded rows.
+  - The answer must return rows on the generated dataset.
+
+  While solving for excel/google sheet questions follow the below 3 rules[MUST FOLLOW]: 
 1. Never use Array formula or sql QUERY function.  Stick to excel functions mentioned in topic/topic hierarchy.
 2. For questions on pivot table in google sheet, mention the steps by step process to create the pivot table in google sheet. 
 3. For questions involving charts using excel/google sheet - use pivot table or excel functions to generate the dataset for the charts.

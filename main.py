@@ -1,6 +1,6 @@
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
-from typing import Optional, List, Literal
+from typing import Optional, List, Literal, Any
 import os
 from dotenv import load_dotenv
 from openai import OpenAI
@@ -504,12 +504,246 @@ class ExtractJDResponse(BaseModel):
     key_responsibilities: List[str]
     interview_skill_summary: Optional[InterviewSkillSummary] = None
 
+def _first_non_empty_string(*values: Any) -> Optional[str]:
+    for value in values:
+        if isinstance(value, str):
+            trimmed = value.strip()
+            if trimmed:
+                return trimmed
+    return None
+
+def _normalize_string_list(value: Any) -> List[str]:
+    if value is None:
+        return []
+    if isinstance(value, list):
+        items: List[str] = []
+        for item in value:
+            if isinstance(item, str):
+                trimmed = item.strip()
+            else:
+                trimmed = str(item).strip()
+            if trimmed:
+                items.append(trimmed)
+        return list(dict.fromkeys(items))
+    if isinstance(value, str):
+        parts = re.split(r"[,;\n]+", value)
+        items = [part.strip() for part in parts if part.strip()]
+        return list(dict.fromkeys(items))
+    text = str(value).strip()
+    return [text] if text else []
+
+def _normalize_interview_skill_items(value: Any) -> List[InterviewSkillItem]:
+    if value is None:
+        return []
+    if isinstance(value, list):
+        items: List[InterviewSkillItem] = []
+        for idx, item in enumerate(value, start=1):
+            if isinstance(item, InterviewSkillItem):
+                items.append(item)
+                continue
+            if isinstance(item, dict):
+                skill = str(item.get("skill", "")).strip()
+                if not skill:
+                    continue
+                priority_raw = item.get("priority", idx)
+                try:
+                    priority = int(priority_raw)
+                except (TypeError, ValueError):
+                    priority = idx
+                items.append(InterviewSkillItem(skill=skill, priority=priority))
+                continue
+            skill = str(item).strip()
+            if skill:
+                items.append(InterviewSkillItem(skill=skill, priority=idx))
+        return items
+    return [
+        InterviewSkillItem(skill=skill, priority=idx)
+        for idx, skill in enumerate(_normalize_string_list(value), start=1)
+    ]
+
+def _normalize_preparation_focus_items(value: Any) -> List[InterviewPrepFocusItem]:
+    if value is None:
+        return []
+    if isinstance(value, list):
+        items: List[InterviewPrepFocusItem] = []
+        for item in value:
+            if isinstance(item, InterviewPrepFocusItem):
+                items.append(item)
+                continue
+            if isinstance(item, dict):
+                skill = str(item.get("skill", "")).strip()
+                focus_type = str(item.get("type", "")).strip()
+                reason = str(item.get("reason", "")).strip()
+                if skill or focus_type or reason:
+                    items.append(
+                        InterviewPrepFocusItem(
+                            skill=skill,
+                            type=focus_type or "analytics",
+                            reason=reason or "Relevant to the role",
+                        )
+                    )
+                continue
+            skill = str(item).strip()
+            if skill:
+                items.append(
+                    InterviewPrepFocusItem(
+                        skill=skill,
+                        type="analytics",
+                        reason="Relevant to the role",
+                    )
+                )
+        return items
+    return [
+        InterviewPrepFocusItem(skill=skill, type="analytics", reason="Relevant to the role")
+        for skill in _normalize_string_list(value)
+    ]
+
+def _infer_suggested_subjects(role_title: str, key_skills: List[str], job_description: str) -> List[str]:
+    haystack = " ".join([role_title or "", " ".join(key_skills or []), job_description or ""]).lower()
+    inferred: List[str] = []
+    subject_rules = [
+        ("SQL", ["sql", "query", "database", "warehouse", "etl"]),
+        ("Python", ["python", "pandas", "numpy", "automation", "script"]),
+        ("Statistics", ["statistics", "statistical", "p-value", "hypothesis", "regression"]),
+        ("Excel", ["excel", "spreadsheet", "vlookup", "hlookup", "pivot"]),
+        ("Google Sheets", ["google sheets", "sheets"]),
+        ("Power BI", ["power bi", "dax", "measure", "dashboard"]),
+        ("R", [" r ", "r language", "r studio"]),
+    ]
+
+    for subject, needles in subject_rules:
+        if any(needle in haystack for needle in needles):
+            inferred.append(subject)
+
+    if not inferred:
+        inferred = ["SQL", "Python"]
+
+    return list(dict.fromkeys(inferred))
+
+def _build_fallback_extract_jd_response(request: ExtractJDRequest, notes: Optional[str] = None) -> ExtractJDResponse:
+    role_title = _first_non_empty_string(request.role, "Data Analyst") or "Data Analyst"
+    key_skills = _normalize_string_list(request.user_skills)
+    domains = _normalize_string_list(request.company_name)
+    suggested_subjects = _infer_suggested_subjects(role_title, key_skills, request.job_description)
+    summary = InterviewSkillSummary(
+        company=request.company_name or None,
+        role=request.role or role_title,
+        core_technical_skills=[],
+        supporting_skills=[],
+        thinking_business_skills=[],
+        recommended_preparation_focus=[],
+        notes=notes,
+    )
+
+    return ExtractJDResponse(
+        role_title=role_title,
+        key_skills=key_skills,
+        domains=domains,
+        suggested_subjects=suggested_subjects,
+        experience_level="mid",
+        key_responsibilities=[],
+        interview_skill_summary=summary,
+    )
+
+def _normalize_extract_jd_payload(payload: dict, request: ExtractJDRequest) -> ExtractJDResponse:
+    summary_raw = payload.get("interview_skill_summary")
+    summary_company = _first_non_empty_string(
+        payload.get("company"),
+        payload.get("company_name"),
+        request.company_name,
+    )
+    summary_role = _first_non_empty_string(
+        payload.get("role"),
+        payload.get("role_title"),
+        request.role,
+    )
+
+    if isinstance(summary_raw, dict):
+        summary = InterviewSkillSummary(
+            company=_first_non_empty_string(summary_raw.get("company"), summary_company),
+            role=_first_non_empty_string(summary_raw.get("role"), summary_role),
+            core_technical_skills=_normalize_interview_skill_items(summary_raw.get("core_technical_skills")),
+            supporting_skills=_normalize_interview_skill_items(summary_raw.get("supporting_skills")),
+            thinking_business_skills=_normalize_interview_skill_items(summary_raw.get("thinking_business_skills")),
+            recommended_preparation_focus=_normalize_preparation_focus_items(
+                summary_raw.get("recommended_preparation_focus")
+            ),
+            notes=_first_non_empty_string(summary_raw.get("notes")),
+        )
+    else:
+        summary = InterviewSkillSummary(
+            company=summary_company,
+            role=summary_role,
+            core_technical_skills=[],
+            supporting_skills=[],
+            thinking_business_skills=[],
+            recommended_preparation_focus=[],
+            notes=None,
+        )
+
+    role_title = _first_non_empty_string(
+        payload.get("role_title"),
+        payload.get("job_title"),
+        payload.get("title"),
+        payload.get("role"),
+        request.role,
+        summary.role,
+    ) or "Data Analyst"
+
+    key_skills = _normalize_string_list(
+        payload.get("key_skills")
+        or payload.get("required_skills")
+        or payload.get("skills")
+        or request.user_skills
+    )
+    if not key_skills and summary.core_technical_skills:
+        key_skills = [item.skill for item in summary.core_technical_skills if item.skill]
+
+    domains = _normalize_string_list(
+        payload.get("domains")
+        or payload.get("domain_focus")
+        or payload.get("industry")
+        or request.company_name
+    )
+
+    suggested_subjects = _normalize_string_list(payload.get("suggested_subjects"))
+    if not suggested_subjects:
+        suggested_subjects = _infer_suggested_subjects(role_title, key_skills, request.job_description)
+
+    experience_level = _first_non_empty_string(payload.get("experience_level")) or "mid"
+
+    key_responsibilities = _normalize_string_list(
+        payload.get("key_responsibilities")
+        or payload.get("responsibilities")
+    )
+
+    if not summary.core_technical_skills and key_skills:
+        summary.core_technical_skills = [
+            InterviewSkillItem(skill=skill, priority=index)
+            for index, skill in enumerate(key_skills[:5], start=1)
+        ]
+
+    if not summary.company and request.company_name:
+        summary.company = request.company_name
+    if not summary.role:
+        summary.role = role_title
+
+    return ExtractJDResponse(
+        role_title=role_title,
+        key_skills=key_skills,
+        domains=domains,
+        suggested_subjects=suggested_subjects,
+        experience_level=experience_level,
+        key_responsibilities=key_responsibilities,
+        interview_skill_summary=summary,
+    )
+
 @app.post("/interview/extract-jd", response_model=ExtractJDResponse)
 async def extract_jd_info(request: ExtractJDRequest):
     print("[/interview/extract-jd] incoming request")
     
     if not request.job_description or not request.job_description.strip():
-        raise ValueError("Job description cannot be empty")
+        raise HTTPException(status_code=400, detail="Job description cannot be empty")
 
     prompt = f"""
     You are a senior hiring manager and interview expert.
@@ -579,26 +813,43 @@ async def extract_jd_info(request: ExtractJDRequest):
 
         result_text = response.choices[0].message.content.strip()
         print("[/interview/extract-jd] OpenAI response:", result_text)
-
+        parsed_payload = None
         try:
-            import json
-            result = json.loads(result_text)
+            parsed_payload = json.loads(result_text)
             print("[/interview/extract-jd] Successfully parsed JSON response")
-            return ExtractJDResponse(**result)
         except json.JSONDecodeError as parse_error:
             print(f"[/interview/extract-jd] JSON parse error: {parse_error}")
-            import re
             json_match = re.search(r'\{.*\}', result_text, re.DOTALL)
             if json_match:
                 print("[/interview/extract-jd] Extracted JSON from response using regex")
-                result = json.loads(json_match.group())
-                return ExtractJDResponse(**result)
-            else:
-                raise ValueError("Could not parse AI response as JSON")
+                try:
+                    parsed_payload = json.loads(json_match.group())
+                except json.JSONDecodeError as nested_error:
+                    print(f"[/interview/extract-jd] Regex JSON parse error: {nested_error}")
+                    parsed_payload = None
+
+        if isinstance(parsed_payload, dict):
+            try:
+                return _normalize_extract_jd_payload(parsed_payload, request)
+            except Exception as normalize_error:
+                print(f"[/interview/extract-jd] Normalization error: {normalize_error}")
+                return _build_fallback_extract_jd_response(
+                    request,
+                    notes=f"Fallback extraction used after normalization error: {normalize_error}",
+                )
+
+        print("[/interview/extract-jd] Falling back to heuristic extraction due to invalid AI payload")
+        return _build_fallback_extract_jd_response(
+            request,
+            notes="Fallback extraction used because the model returned invalid JSON.",
+        )
 
     except Exception as e:
         print(f"[/interview/extract-jd] Error: {type(e).__name__}: {e}")
-        raise
+        return _build_fallback_extract_jd_response(
+            request,
+            notes=f"Fallback extraction used because the AI service failed: {type(e).__name__}",
+        )
 
 class DomainKPIRequest(BaseModel):
     company_name: str
