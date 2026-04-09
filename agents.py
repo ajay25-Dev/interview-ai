@@ -14,6 +14,7 @@ def get_agent1_llm_and_prompt(
     model: str = "gpt-5-mini",
     temperature: float = 1,
     solution_coding_language: str = "SQL",
+    total_questions: int = 8,
 ):
     llm = ChatOpenAI(model=model, reasoning = {"effort": "low"})
     normalized_solution_language = (
@@ -21,10 +22,27 @@ def get_agent1_llm_and_prompt(
         if isinstance(solution_coding_language, str)
         else ""
     )
+    resolved_total_questions = (
+        int(total_questions)
+        if isinstance(total_questions, int) and total_questions > 0
+        else 8
+    )
     system_prompt = (
         AGENT1_SYSTEM_NON_CODING
         if normalized_solution_language == "non_coding"
         else AGENT1_SYSTEM
+    )
+    system_prompt = system_prompt.replace(
+        "Generate Exactly 8 questions.",
+        f"Generate Exactly {resolved_total_questions} questions.",
+    )
+    system_prompt = system_prompt.replace(
+        "Generate exactly 8 questions.",
+        f"Generate exactly {resolved_total_questions} questions.",
+    )
+    system_prompt = system_prompt.replace(
+        "number of questions - 8 //Fixed value",
+        f"number of questions - {resolved_total_questions} //Requested value",
     )
     prompt = ChatPromptTemplate.from_messages([
         ("system", system_prompt),

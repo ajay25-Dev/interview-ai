@@ -32,6 +32,7 @@ class OrchestrateRequest(BaseModel):
     future_topics: Optional[List[str]] = None
     dataset_creation_coding_language: str = "SQL"
     solution_coding_language: Optional[str] = None
+    total_questions: Optional[int] = None
 
 class QuizRequest(BaseModel):
     main_topic: str = "HAVING in SQL"
@@ -605,8 +606,7 @@ def _infer_suggested_subjects(role_title: str, key_skills: List[str], job_descri
         ("SQL", ["sql", "query", "database", "warehouse", "etl"]),
         ("Python", ["python", "pandas", "numpy", "automation", "script"]),
         ("Statistics", ["statistics", "statistical", "p-value", "hypothesis", "regression"]),
-        ("Excel", ["excel", "spreadsheet", "vlookup", "hlookup", "pivot"]),
-        ("Google Sheets", ["google sheets", "sheets"]),
+        ("Excel", ["excel", "spreadsheet", "vlookup", "hlookup", "pivot", "google sheets", "sheets"]),
         ("Power BI", ["power bi", "dax", "measure", "dashboard"]),
         ("R", [" r ", "r language", "r studio"]),
     ]
@@ -762,7 +762,7 @@ async def extract_jd_info(request: ExtractJDRequest):
         "role_title": "The job title/role name",
         "key_skills": ["skill1", "skill2", "skill3", ...],
         "domains": ["domain1", "domain2", ...],
-        "suggested_subjects": ["SQL", "Python", "Google Sheets", ...],
+        "suggested_subjects": ["SQL", "Python", "Excel", ...],
         "experience_level": "entry/junior/mid/senior",
         "key_responsibilities": ["responsibility1", "responsibility2", ...],
         "interview_skill_summary": {{
@@ -795,7 +795,7 @@ async def extract_jd_info(request: ExtractJDRequest):
     NOTES FOR BASE FIELDS:
     - key_skills: Extract 5-10 most important technical skills
     - domains: Extract 2-3 business domains (e.g., Finance, Healthcare, Retail)
-    - suggested_subjects: Which subjects would be most relevant (from: SQL, Python, Google Sheets, Statistics, Excel, Power BI, R)
+    - suggested_subjects: Which subjects would be most relevant (from: SQL, Python, Excel, Statistics, Power BI, R)
     - experience_level: Infer from JD language
     - key_responsibilities: Extract 3-4 main responsibilities
     """
@@ -1069,7 +1069,7 @@ async def generate_subject_prep(request: SubjectPrepRequest):
     elif subject_key in ['guess estimate', 'guess_estimate', 'guessestimate']:
         prompt = get_interview_prep_prompt('case_study', 'guess estimate')
         context = _build_subject_context(request.subject, request)
-    elif subject_key in ['statistics', 'stats', 'google sheets', 'sheets']:
+    elif subject_key in ['statistics', 'stats', 'excel', 'google sheets', 'sheets']:
         prompt = get_interview_prep_prompt('case_study', 'statistics')
         context = _build_subject_context(request.subject, request)
     else:
