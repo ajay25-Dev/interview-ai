@@ -1459,6 +1459,7 @@ OUTPUT FORMAT REQUIREMENTS:
         {
           "question_number": 1,
           "question": "Business question text",
+          "answer": "Reference answer or solution output",
           "expected_approach": "Step-by-step approach to solve",
           "difficulty": "easy",
           "sample_input": "Example query or input",
@@ -1478,6 +1479,7 @@ Rules:
 ✅ All numeric values use whole numbers (no decimals)
 ✅ Include realistic dataset schemas and sample data
 ✅ Progress questions from basic to advanced
+✅ Every question must include a non-empty answer field
 ✅ Include sample_input and sample_output for each question
 ✅ Be specific and practical
 ❌ NO XML tags, NO markdown, NO text wrapping - JSON ONLY
@@ -1508,6 +1510,7 @@ OUTPUT FORMAT REQUIREMENTS:
         {
           "question_number": 1,
           "question": "Business question text",
+          "answer": "Reference answer or solution output",
           "expected_approach": "Step-by-step approach to solve",
           "difficulty": "easy",
           "sample_input": "Example code or input",
@@ -1527,6 +1530,7 @@ Rules:
 ✅ All numeric values use whole numbers (no decimals)
 ✅ Include realistic data descriptions and sample data
 ✅ Progress questions from basic to advanced (pandas, numpy operations)
+✅ Every question must include a non-empty answer field
 ✅ Include sample_input and sample_output for each question
 ✅ Be specific and practical (use pandas operations like groupby, merge, filtering)
 ❌ NO XML tags, NO markdown, NO text wrapping - JSON ONLY
@@ -1554,14 +1558,15 @@ OUTPUT FORMAT REQUIREMENTS:
       "dataset_schema": "Key variables, assumptions, and constraints",
       "sample_data": "Example breakdown or reference data",
       "questions": [
-        {
-          "question_number": 1,
-          "question": "Clear estimation question",
-          "expected_approach": "Step-by-step logical reasoning framework to solve",
-          "difficulty": "easy",
-          "sample_input": "Key assumptions and given data",
-          "sample_output": "Estimated value with reasoning breakdown"
-        }
+          {
+            "question_number": 1,
+            "question": "Clear estimation question",
+            "answer": "Reference answer or solution output",
+            "expected_approach": "Step-by-step logical reasoning framework to solve",
+            "difficulty": "easy",
+            "sample_input": "Key assumptions and given data",
+            "sample_output": "Estimated value with reasoning breakdown"
+          }
       ],
       "estimated_time_minutes": 30
     }
@@ -1573,6 +1578,7 @@ OUTPUT FORMAT REQUIREMENTS:
 Rules:
 ✅ Generate 2-3 comprehensive estimation problems
 ✅ Each problem must have 5-7 questions progressing in complexity
+✅ Every question must include a non-empty answer field
 ✅ Include logical reasoning frameworks (top-down, bottom-up approaches)
 ✅ Each question should have clear assumptions and calculation steps
 ✅ Include practical business scenarios (market sizing, revenue estimation, user scaling)
@@ -1607,6 +1613,7 @@ OUTPUT FORMAT REQUIREMENTS:
         {
           "question_number": 1,
           "question": "Statistical or Excel question",
+          "answer": "Reference answer or solution output",
           "expected_approach": "Step-by-step approach including formulas and reasoning",
           "difficulty": "easy",
           "sample_input": "Example data or Excel formula",
@@ -1630,6 +1637,7 @@ Rules:
 ✅ Progress from basic statistical concepts to advanced hypothesis testing
 ✅ Include sample Google Sheets formulas with expected outputs
 ✅ Mix conceptual understanding with practical formula application
+✅ Every question must include a non-empty answer field
 ❌ NO XML tags, NO markdown, NO text wrapping - JSON ONLY
 """
 

@@ -933,6 +933,7 @@ async def generate_domain_kpi(request: DomainKPIRequest):
 class CaseStudyQuestion(BaseModel):
     question_number: int
     question: str
+    answer: Optional[str] = None
     expected_approach: str
     difficulty: str
     sample_input: Optional[str] = None
@@ -972,10 +973,11 @@ def _build_subject_context(subject_name: str, request: SubjectPrepRequest) -> st
     Please provide:
     1. 2-3 realistic case studies with complete datasets
     2. For each case study: 8-10 adaptive questions progressing in difficulty
-    3. Sample input/output for each question
-    4. Dataset schema and sample data for each case study
-    5. Key learning points
-    6. Common mistakes to avoid
+    3. A required answer field for each question
+    4. Sample input/output for each question
+    5. Dataset schema and sample data for each case study
+    6. Key learning points
+    7. Common mistakes to avoid
 
     Format as JSON:
     {{
@@ -992,6 +994,7 @@ def _build_subject_context(subject_name: str, request: SubjectPrepRequest) -> st
                     {{
                         "question_number": 1,
                         "question": "Clear question text",
+                        "answer": "Reference answer or solution output",
                         "expected_approach": "Step-by-step approach to solve",
                         "difficulty": "easy|medium|hard",
                         "sample_input": "Input query or code snippet",
@@ -1008,6 +1011,9 @@ def _build_subject_context(subject_name: str, request: SubjectPrepRequest) -> st
     Make sure:
     - Dataset schema is clearly formatted
     - Sample data includes 3-5 realistic rows
+    - Every question includes a non-empty answer field
+    - For coding subjects, answer should be code, query, formula, or dataframe logic
+    - For non-coding subjects, answer should be a concise reference explanation
     - Each question has concrete sample input/output
     - Questions build from basic to advanced
     """
