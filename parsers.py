@@ -658,6 +658,7 @@ def get_parser_for_subject(subject: str):
         'sql': extract_agent2_blocks_sql,
         'python': extract_agent2_blocks_python,
         'statistics': extract_agent2_blocks_statistics,
+        'excel': extract_agent2_blocks_sheets,
         'google_sheets': extract_agent2_blocks_sheets,
         'google sheets': extract_agent2_blocks_sheets,
         'sheets': extract_agent2_blocks_sheets,
@@ -673,11 +674,12 @@ def extract_agent2_blocks(agent2_text: str, subject: str = "SQL") -> Dict[str, U
     """
     Splits Agent 2 output into subject-aware dataset blocks plus the answer map.
     
-    Subject-aware expectations:
-    - SQL: -- @DATA_CREATION (SQL only)
-    - Python: -- @DATA_CREATION (SQL) + # @DATA_CREATION_PYTHON (pandas)
-    - Statistics: Google Sheets format using // @DATA_CREATION(_SHEETS) + // @ANSWER_Qn
-    - Google Sheets: -- @DATA_CREATION (optional SQL) + // @DATA_CREATION_SHEETS (CSV)
+Subject-aware expectations:
+- SQL: -- @DATA_CREATION (SQL only)
+- Python: -- @DATA_CREATION (SQL) + # @DATA_CREATION_PYTHON (pandas)
+- Excel: -- @DATA_CREATION (optional SQL) + // @DATA_CREATION_SHEETS (CSV)
+- Statistics: Google Sheets format using // @DATA_CREATION(_SHEETS) + // @ANSWER_Qn
+- Google Sheets: -- @DATA_CREATION (optional SQL) + // @DATA_CREATION_SHEETS (CSV)
     
     Returns a dict containing:
       - data_creation_sql (when available)

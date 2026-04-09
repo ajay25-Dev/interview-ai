@@ -857,7 +857,14 @@ class DomainKPIRequest(BaseModel):
     domain: Optional[str] = None
 
 class DomainKPIResponse(BaseModel):
+    company_name: Optional[str] = None
     company_overview: str
+    division: Optional[str] = None
+    headquarters: Optional[str] = None
+    founded_year: Optional[str] = None
+    revenue_fy: Optional[str] = None
+    number_of_employees: Optional[str] = None
+    top_strategic_priorities: Optional[List[str]] = None
     domain_snapshot: str
     kpis: List[dict]
 
@@ -876,12 +883,27 @@ async def generate_domain_kpi(request: DomainKPIRequest):
     {f"Job Description: {request.job_description}" if request.job_description else "Assume general Data Analyst role"}
     
     Please provide:
-    1. A comprehensive company overview and domain snapshot
+    1. A compact Domain Knowledge Brief in the same structure previously used by the app:
+       - Company Overview section
+       - Company
+       - Division
+       - Headquarters
+       - FoundedYear
+       - RevenueFY
+       - NumberOfEmployees
+       - Top 3 Strategic Priorities
     2. 12-15 key KPIs with definition, formula, why it matters, and domain example
     
     Format the response as JSON with structure:
     {{
+        "company_name": "{request.company_name}",
         "company_overview": "...",
+        "division": "...",
+        "headquarters": "...",
+        "founded_year": "...",
+        "revenue_fy": "...",
+        "number_of_employees": "...",
+        "top_strategic_priorities": ["...", "...", "..."],
         "domain_snapshot": "...",
         "kpis": [
             {{

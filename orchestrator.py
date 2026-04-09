@@ -40,6 +40,7 @@ def _repair_agent2_output(
     case_study_text: str,
     questions_block: str,
     previous_raw: str,
+    missing_question_numbers: Optional[List[int]] = None,
 ) -> str:
     """
     Repair Agent 2 output by re-issuing the subject-specific prompt with a strict
@@ -67,6 +68,15 @@ def _repair_agent2_output(
             "// @ANSWER_Q1, // @ANSWER_Q2, ...\n"
             "The Sheets CSV block must not be empty.\n"
         )
+    missing_answers_instruction = ""
+    if missing_question_numbers:
+        missing_list = ", ".join(str(num) for num in missing_question_numbers)
+        missing_answers_instruction = (
+            "\n\nMISSING ANSWER BLOCKS INSTRUCTION:\n"
+            f"The previous response was missing answer blocks for question numbers: {missing_list}.\n"
+            "Regenerate the entire response from scratch and ensure every question has exactly one answer block.\n"
+            "Do not omit any answer blocks.\n"
+        )
     repair_prompt = ChatPromptTemplate.from_messages([
         (
             "system",
@@ -75,7 +85,8 @@ def _repair_agent2_output(
             + "The previous response failed parsing because it did not include the exact required tags.\n"
             + "Regenerate from scratch and output ONLY the exact tagged blocks required by this subject.\n"
             + "Do not repeat the previous formatting mistake."
-            + subject_specific_repair,
+            + subject_specific_repair
+            + missing_answers_instruction,
         ),
         (
             "user",
@@ -1247,6 +1258,42 @@ def orchestrate(
             question.get("expected_output_table") or []
             for question in questions_raw_list
         ]
+
+    if not is_non_coding:
+        missing_answer_ids = [
+            int(question["id"])
+            for question in questions_raw_list
+            if not str(answers_sql_map.get(str(question["id"])) or "").strip()
+        ]
+        if missing_answer_ids:
+            repaired_agent2_out = _repair_agent2_output(
+                subject=subject,
+                dataset_creation_coding_language=resolved_dataset_language,
+                solution_coding_language=resolved_solution_language,
+                case_study_text=case_block,
+                questions_block=questions_raw,
+                previous_raw=agent2_out,
+                missing_question_numbers=missing_answer_ids,
+            )
+            parsed_repair = extract_agent2_blocks(
+                repaired_agent2_out,
+                subject=parser_subject,
+            )
+            repaired_answers_sql_map = parsed_repair["answers"]
+            still_missing = [
+                q_id
+                for q_id in missing_answer_ids
+                if not str(repaired_answers_sql_map.get(str(q_id)) or "").strip()
+            ]
+            if still_missing:
+                raise ValueError(
+                    f"Missing answer block(s) after repair for question(s): {', '.join(map(str, still_missing))}"
+                )
+            parsed2 = parsed_repair
+            agent2_out = repaired_agent2_out
+            answers_sql_map = repaired_answers_sql_map
+            if not is_non_coding:
+                questions_raw_list = parse_questions_raw(questions_raw, answers_sql_map)
 
     # Non-coding branch: keep questions + answers, skip all dataset creation/parsing/validation.
     if is_non_coding:

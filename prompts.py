@@ -513,6 +513,8 @@ One dataset creation block (tagged) that creates and seeds data with 50-100 rows
 
 One answer block per question (tagged), producing the exact requested columns and using only the "topics" along with "topic hierarchy" (if required) and the coding language implied by the question. Never solve the questions using the topics mentioned in the "do not use topic" list. Solve the question in the same coding language as mentioned in the inputs and use the hints mentioned for the solution. 
 
+Every question must have exactly one non-empty answer block. Do not omit later questions.
+
 
 Absolute Output Rules (Do Not Violate):
 
@@ -676,6 +678,7 @@ Absolute Output Rules (Do Not Violate):
 - No JSON. No explanations. No prose.
 - Do not output case-study narration, markdown headers, or fenced code blocks outside the required tags.
 - The output must contain a non-empty `# @DATA_CREATION_PYTHON` block before any answer block.
+- Every question must have exactly one non-empty `# @ANSWER_Qn` block.
 - The SQL and Python datasets must contain the same tables, columns, and rows so filters/thresholds behave identically in every runtime.
 - Use whole numbers (no decimals) for all amounts/prices.
 
@@ -800,6 +803,7 @@ Answer Blocks (# @ANSWER_Qn):
   # @ANSWER_Q1
   -- Mean satisfaction for June 2023
   =AVERAGEIFS(CustomerSurvey!$H:$H, CustomerSurvey!$E:$E, 2023, CustomerSurvey!$F:$F, 6)
+- Every question must have exactly one non-empty `# @ANSWER_Qn` block.
 
 Coverage & Validation Checklist:
 - Do SQL + pandas datasets stay in sync (same row counts, sums, categories)?
@@ -928,6 +932,7 @@ Absolute Output Rules (Do Not Violate):
   -- @ANSWER_Q3
   ...
 - Keep each answer aligned to the exact question intent and scope.
+- Every question must have exactly one non-empty answer block.
 - Respect future topics/do-not-use constraints from input.
 
 OUTPUT (Produce Exactly These Tagged Blocks - Nothing Else)
@@ -1389,49 +1394,43 @@ Output Format:
 
 INTERVIEW_PREP_DOMAIN_KPI = """
 You are an expert domain coach for aspiring data analysts.
-Your role is to prepare learners with detailed business/domain knowledge and the key KPIs relevant to the company and role they are applying for.
+Your role is to prepare learners with the same compact Domain Knowledge Brief structure that the product already displays in the plan page.
 
-🔹 STEP 1: CONTEXT SETUP
-When provided with Company Name and Job Description:
-- Extract the role title and business function (e.g., Marketing Analyst, Supply Chain Analyst)
-- Detect domain keywords (e.g., loyalty, churn, quick commerce, fraud, stockouts)
-- If no JD → assume a general Data Analyst role in that company
+You must output structured JSON only.
 
-🔹 STEP 2: COMPANY + DOMAIN SNAPSHOT (Detailed)
-Provide comprehensive business/domain analysis covering:
-- Company Overview (history, mission, scale, global presence)
-- Sector / Sub-sector
-- Business Model (revenue sources, pricing, margins)
-- Value Chain (suppliers, operations, distribution, retail, after-sales)
-- Core Customer Segments (B2B vs B2C, demographics)
-- Operations (logistics, supply chain, procurement, technology)
-- Products/Services Portfolio (categories, bestsellers)
-- Geographic Presence
-- Competitors & Market Positioning
-- Trends & Challenges
-- Analytics in this Domain (how data drives daily decisions)
+Required output structure:
+{
+  "company_name": "Company name",
+  "company_overview": "2-4 concise sentences summarizing the company and role context",
+  "division": "Primary business division or function",
+  "headquarters": "Headquarters location",
+  "founded_year": "Founded year or notable founding period",
+  "revenue_fy": "Latest fiscal year revenue or estimated revenue",
+  "number_of_employees": "Estimated employee count",
+  "top_strategic_priorities": [
+    "Priority 1",
+    "Priority 2",
+    "Priority 3"
+  ],
+  "domain_snapshot": "A short domain-specific summary that supports the brief",
+  "kpis": [
+    {
+      "name": "KPI name",
+      "definition": "What it measures",
+      "formula": "How it is calculated",
+      "why_matters": "Business impact",
+      "example": "Concrete example in this company/industry"
+    }
+  ]
+}
 
-🔹 STEP 3: DOMAIN KPI MASTERCLASS
-Deliver deep dive into 12-15 core KPIs, each with:
-- KPI Name
-- Definition (what it measures)
-- Formula (how it's calculated)
-- Why It Matters (business implications)
-- Domain Example (concrete scenario in this company/industry)
-
-Ensure coverage of:
-- Financial KPIs
-- Operational KPIs
-- Sub-domain KPIs if applicable (supply chain, customer experience, marketing)
-
-🔹 STEP 4: CLOSING FOLLOW-UP
-Always end with offer to:
-1️⃣ Go deeper into KPI calculations with worked-out examples
-2️⃣ Explore domain challenges with KPI linkages
-3️⃣ Compare KPIs of this company vs competitors
-
-📌 Stay 100% focused on domain + KPIs. No generic theory, no tools explanation.
-Make learners feel interview-confident on domain knowledge.
+Formatting rules:
+- Keep the visible brief compact and familiar in structure.
+- Use the old-style company overview labels and priorities that the plan page renders.
+- Do not output long essays.
+- Keep priorities to exactly 3 items.
+- Include 12 to 15 KPIs in the JSON, but do not force them into the visible brief structure.
+- Return only valid JSON.
 """
 
 INTERVIEW_PREP_CASE_STUDY_GENERATOR_SQL = """
