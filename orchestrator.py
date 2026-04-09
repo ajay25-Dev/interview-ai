@@ -29,8 +29,82 @@ def _repair_case_output(previous_raw: str) -> str:
         ----- BEGIN TEXT -----
         {txt}
         ----- END TEXT -----""")
-            ])
+    ])
     return (repair_prompt | fixer).invoke({"txt": previous_raw}).content
+
+
+def _repair_agent2_output(
+    subject: str,
+    dataset_creation_coding_language: str,
+    solution_coding_language: str,
+    case_study_text: str,
+    questions_block: str,
+    previous_raw: str,
+) -> str:
+    """
+    Repair Agent 2 output by re-issuing the subject-specific prompt with a strict
+    formatting reminder when the first pass misses required tags.
+    """
+    fixer = ChatOpenAI(model="gpt-4o-mini", temperature=0)
+    system_prompt = get_agent2_system_prompt(subject)
+    subject_lower = subject.lower().strip()
+    subject_specific_repair = ""
+    if subject_lower == "python":
+        subject_specific_repair = (
+            "\n\nPYTHON REPAIR INSTRUCTION:\n"
+            "Your response must contain the exact blocks in this order:\n"
+            "-- @DATA_CREATION\n"
+            "# @DATA_CREATION_PYTHON\n"
+            "# @ANSWER_Q1, # @ANSWER_Q2, ...\n"
+            "The Python dataset block must not be empty.\n"
+        )
+    elif subject_lower in {"excel", "google_sheets", "google sheets", "sheets"}:
+        subject_specific_repair = (
+            "\n\nEXCEL REPAIR INSTRUCTION:\n"
+            "Your response must contain the exact blocks in this order:\n"
+            "-- @DATA_CREATION\n"
+            "// @DATA_CREATION_SHEETS\n"
+            "// @ANSWER_Q1, // @ANSWER_Q2, ...\n"
+            "The Sheets CSV block must not be empty.\n"
+        )
+    repair_prompt = ChatPromptTemplate.from_messages([
+        (
+            "system",
+            system_prompt
+            + "\n\nIMPORTANT REPAIR INSTRUCTION:\n"
+            + "The previous response failed parsing because it did not include the exact required tags.\n"
+            + "Regenerate from scratch and output ONLY the exact tagged blocks required by this subject.\n"
+            + "Do not repeat the previous formatting mistake."
+            + subject_specific_repair,
+        ),
+        (
+            "user",
+            """Previous output that failed parsing (for reference only):
+{previous_raw}
+
+Case Study:
+{case_study_text}
+
+Questions:
+{questions_block}
+
+Dataset Creation Coding Language: {dataset_creation_coding_language}
+Solution Coding Language: {solution_coding_language}
+""",
+        ),
+    ])
+    return (
+        repair_prompt
+        | fixer
+    ).invoke(
+        {
+            "previous_raw": previous_raw,
+            "case_study_text": case_study_text,
+            "questions_block": questions_block,
+            "dataset_creation_coding_language": dataset_creation_coding_language,
+            "solution_coding_language": solution_coding_language,
+        }
+    ).content
 
 
 # Shared helpers
@@ -847,6 +921,7 @@ from agents import (
     get_agent1_interviewq_llm_and_prompt,
     get_agent1_llm_and_prompt,
     get_agent2_llm_and_prompt,
+    get_agent2_system_prompt,
 )
 
 def generate_case_study(params: dict) -> str:
@@ -869,6 +944,12 @@ def generate_case_study(params: dict) -> str:
     prompt_params = dict(params)
     prompt_params["topic"] = topic_value
     prompt_params["topic_hierarchy"] = topic_hierarchy_value
+    total_questions_value = params.get("total_questions") or params.get("question_count") or 8
+    try:
+        total_questions_value = int(total_questions_value)
+    except (TypeError, ValueError):
+        total_questions_value = 8
+    prompt_params["total_questions"] = total_questions_value
     prompt_params["future_topics"] = _format_future_topics_for_prompt(
         params.get("future_topics")
     )
@@ -880,7 +961,8 @@ def generate_case_study(params: dict) -> str:
         or "SQL"
     )
     llm, prompt = get_agent1_llm_and_prompt(
-        solution_coding_language=prompt_params["solution_coding_language"]
+        solution_coding_language=prompt_params["solution_coding_language"],
+        total_questions=total_questions_value,
     )
     messages = prompt.format_messages(**prompt_params)   # <-- explicit render
     # print(messages)
@@ -1094,7 +1176,23 @@ def orchestrate(
     )
     # Pass subject to parser for subject-aware parsing
     parser_subject = "non_coding" if is_non_coding else subject
-    parsed2 = extract_agent2_blocks(agent2_out, subject=parser_subject)
+    parser_subject_lower = parser_subject.lower().strip()
+    try:
+        parsed2 = extract_agent2_blocks(agent2_out, subject=parser_subject)
+    except ValueError as parse_error:
+        if parser_subject_lower in {"excel", "google_sheets", "google sheets", "sheets", "python"}:
+            repaired_agent2_out = _repair_agent2_output(
+                subject=subject,
+                dataset_creation_coding_language=resolved_dataset_language,
+                solution_coding_language=resolved_solution_language,
+                case_study_text=case_block,
+                questions_block=questions_raw,
+                previous_raw=agent2_out,
+            )
+            parsed2 = extract_agent2_blocks(repaired_agent2_out, subject=parser_subject)
+            agent2_out = repaired_agent2_out
+        else:
+            raise parse_error
     agent2_sql_creation = parsed2.get("data_creation_sql")
     agent2_python_creation = parsed2.get("data_creation_python")
     agent2_sheets_creation = parsed2.get("data_creation_sheets")
@@ -1106,7 +1204,7 @@ def orchestrate(
         case_block,
         questions_raw,
     )
-    if parser_subject == "sql" and temporal_anchor_date:
+    if parser_subject_lower == "sql" and temporal_anchor_date:
         if _uses_wall_clock_temporal_anchor(agent2_sql_creation):
             agent2_sql_creation = _rewrite_wall_clock_temporal_references(
                 agent2_sql_creation,
@@ -1174,7 +1272,7 @@ def orchestrate(
     subject_lower = subject.strip().lower()
     coding_language_lower = resolved_solution_language.lower()
     is_python_like = coding_language_lower in {"python", "statistics"} or subject_lower in {"python", "statistics"}
-    is_google_like = subject_lower in {"google_sheets", "google sheets", "sheets"} or coding_language_lower in {"google_sheets", "google sheets", "sheets"}
+    is_google_like = subject_lower in {"excel", "google_sheets", "google sheets", "sheets"} or coding_language_lower in {"excel", "google_sheets", "google sheets", "sheets", "excel formula"}
 
     python_dataset_info = _extract_python_dataset_info(agent2_python_creation) if (is_python_like and agent2_python_creation) else None
     google_dataset_info = _extract_csv_dataset_info(agent2_sheets_creation) if (is_google_like and agent2_sheets_creation) else None

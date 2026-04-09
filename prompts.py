@@ -156,12 +156,12 @@ Hard = Combination of logic (conditions + aggregation + business reasoning)
 Never use nested, multi-function, or cross-topic logic in Easy questions.
 The complexity should feel like a smooth ramp-up, not a jump.
 
-✅ Example Run (if Google Sheets)
+✅ Example Run (if Excel)
 
 Input:
 Field - Data Analytics
 Domain - Retail
-Subject - Google Sheets
+Subject - Excel
 Topic - SUMIF
 Topic Hierarchy - SUM, AVERAGE, COUNT, SUMIF
 do not cover topic - ARRAYFORMULA, QUERY, IMPORTRANGE
@@ -176,7 +176,7 @@ Output (Q1 + Q2):
 Case Study Title: Retail Store Revenue Tracking  
 
 Business Context:  
-A regional retail chain uses Google Sheets to monitor store performance. The finance team wants to identify high-revenue stores, top-selling categories, and areas needing improvement using simple spreadsheet formulas.  
+A regional retail chain uses Excel to monitor store performance. The finance team wants to identify high-revenue stores, top-selling categories, and areas needing improvement using simple spreadsheet formulas.  
 
 Dataset Description:  //do not add any more line to the header
 SalesData(Date, Store, Region, Category, Product, UnitsSold, UnitPrice, Revenue)  
@@ -343,6 +343,7 @@ AGENT1_USER_TEMPLATE = """
 "learner_level": {learner_level},
 "dataset_creation_coding_language": {dataset_creation_coding_language},
 "solution_coding_language": {solution_coding_language},
+"total_questions": {total_questions},
 "future_topics_to_avoid": {future_topics}
 """
 
@@ -673,6 +674,8 @@ Tag names are literal and must appear exactly once in this order:
 
 Absolute Output Rules (Do Not Violate):
 - No JSON. No explanations. No prose.
+- Do not output case-study narration, markdown headers, or fenced code blocks outside the required tags.
+- The output must contain a non-empty `# @DATA_CREATION_PYTHON` block before any answer block.
 - The SQL and Python datasets must contain the same tables, columns, and rows so filters/thresholds behave identically in every runtime.
 - Use whole numbers (no decimals) for all amounts/prices.
 
@@ -837,13 +840,13 @@ import io
 """
 AGENT2_SYSTEM_SHEETS = """
 Role / Goal
-You are a world-class Case+Code Generator for Google Sheets exercises.
-Given a case study, a list of questions, and Google Sheets as the subject, you must always provide a DuckDB-ready SQL dataset plus a CSV/Sheets dataset so the UI can load data into DuckDB and learners can import it into Sheets.
+You are a world-class Case+Code Generator for Excel exercises.
+Given a case study, a list of questions, and Excel as the subject, you must always provide a DuckDB-ready SQL dataset plus a CSV/Excel dataset so the UI can load data into DuckDB and learners can import it into Excel.
 
 Deliverables (exact order):
 1. -- @DATA_CREATION block with DROP/CREATE/INSERT SQL statements.
-2. // @DATA_CREATION_SHEETS block containing CSV text that recreates the exact same data for Google Sheets.
-3. // @ANSWER_Qn blocks containing Google Sheets formulas or Apps Script code.
+2. // @DATA_CREATION_SHEETS block containing CSV text that recreates the exact same data for Excel.
+3. // @ANSWER_Qn blocks containing Excel formulas or Apps Script code.
 
 Tag names are literal and must appear exactly once in this order:
 -- @DATA_CREATION
@@ -852,6 +855,8 @@ Tag names are literal and must appear exactly once in this order:
 
 Absolute Output Rules:
 - No JSON or prose; only the tagged blocks.
+- Do not output <CASE_STUDY_START> or <CASE_STUDY_END>.
+- Do not output case study titles, business context, or practice question narration outside the tagged blocks.
 - SQL block must use INTEGER/TEXT/DATE columns with DROP TABLE IF EXISTS + CREATE TABLE + INSERT statements.
 - CSV block must mirror the SQL data exactly (same column names, order, and values using YYYY-MM-DD dates and integer amounts).
 
@@ -889,7 +894,7 @@ Sheets Dataset Block (// @DATA_CREATION_SHEETS):
   2,Jane,Smith,jane.smith@example.com,Los Angeles,2024-02-12
 
 Answer Blocks (// @ANSWER_Qn):
-- Provide Google Sheets formulas (e.g., =SUMIFS(...)) or Apps Script code that references the seeded columns.
+- Provide Excel formulas (e.g., =SUMIFS(...)) or Apps Script code that references the seeded columns.
 - Return exactly the Expected Output Table columns.
 
 Coverage Checklist:
@@ -1028,6 +1033,7 @@ def get_agent2_system_prompt(subject: str) -> str:
         'sql': AGENT2_SYSTEM_SQL,
         'python': AGENT2_SYSTEM_PYTHON,
         'statistics': AGENT2_SYSTEM_STATISTICS,
+        'excel': AGENT2_SYSTEM_SHEETS,
         'google_sheets': AGENT2_SYSTEM_SHEETS,
         'google sheets': AGENT2_SYSTEM_SHEETS,
         'sheets': AGENT2_SYSTEM_SHEETS,
@@ -1579,8 +1585,8 @@ Rules:
 INTERVIEW_PREP_CASE_STUDY_GENERATOR_STATISTICS = """
 YOU MUST OUTPUT ONLY VALID JSON. NO OTHER TEXT.
 
-Role: You are a world-class Statistics and Google Sheets Expert for data analytics interviews.
-Your job is to create realistic statistical problems and Google Sheets-based scenarios with comprehensive explanations and solutions.
+Role: You are a world-class Statistics and Excel Expert for data analytics interviews.
+Your job is to create realistic statistical problems and Excel-based scenarios with comprehensive explanations and solutions.
 
 OUTPUT FORMAT REQUIREMENTS:
 - Output MUST be pure, valid JSON only
@@ -1591,7 +1597,7 @@ OUTPUT FORMAT REQUIREMENTS:
 {
   "case_studies": [
     {
-      "title": "Statistics or Google Sheets Scenario",
+      "title": "Statistics or Excel Scenario",
       "description": "1-2 sentence business context",
       "problem_statement": "Detailed problem statement (3-5 sentences)",
       "dataset_overview": "Description of data, distributions, and metrics",
@@ -1600,10 +1606,10 @@ OUTPUT FORMAT REQUIREMENTS:
       "questions": [
         {
           "question_number": 1,
-          "question": "Statistical or Google Sheets question",
+          "question": "Statistical or Excel question",
           "expected_approach": "Step-by-step approach including formulas and reasoning",
           "difficulty": "easy",
-          "sample_input": "Example data or Google Sheets formula",
+          "sample_input": "Example data or Excel formula",
           "sample_output": "Expected result with interpretation"
         }
       ],
