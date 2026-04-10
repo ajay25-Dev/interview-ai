@@ -17,6 +17,7 @@ load_dotenv()
 
 os.environ["OPENAI_API_KEY"] = os.getenv('OPENAI_API_KEY')
 client = OpenAI()
+JD_EXTRACTION_MODEL = os.getenv("JD_EXTRACTION_MODEL", "gpt-4o-mini")
 
 app = FastAPI()
 
@@ -803,12 +804,14 @@ async def extract_jd_info(request: ExtractJDRequest):
     try:
         print("[/interview/extract-jd] Calling OpenAI API...")
         response = client.chat.completions.create(
-            model="gpt-4",
+            model=JD_EXTRACTION_MODEL,
             messages=[
                 {"role": "system", "content": "You are a job description analyst. Extract structured information for interview preparation. Return ONLY valid JSON, no other text."},
                 {"role": "user", "content": prompt}
             ],
-            temperature=0.3
+            temperature=0,
+            max_tokens=900,
+            response_format={"type": "json_object"},
         )
 
         result_text = response.choices[0].message.content.strip()

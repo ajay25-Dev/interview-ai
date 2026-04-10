@@ -646,6 +646,7 @@ AGENT2_USER_TEMPLATE = """INPUT (Paste Below This Line When Running)
 Subject: {subject}
 Dataset Creation Coding Language: {dataset_creation_coding_language}
 Coding Language: {coding_language}
+Requested Question Count: {total_questions}
 Future Topics (Do Not Use): {future_topics}
 
 Case Study:
