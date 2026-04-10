@@ -1007,6 +1007,7 @@ def generate_code(
     solution_coding_language: Optional[str],
     case_study_text: str,
     questions_block: str,
+    total_questions: int = 8,
     future_topics: Optional[Any] = None,
 ) -> str:
     # Pass subject to get subject-aware prompt
@@ -1035,6 +1036,7 @@ def generate_code(
         subject=subject,
         coding_language=resolved_solution_language,
         dataset_creation_coding_language=resolved_dataset_language,
+        total_questions=total_questions,
         case_study_text=case_study_text,
         questions_block=questions_block,
         future_topics=_format_future_topics_for_prompt(future_topics),
@@ -1183,6 +1185,7 @@ def orchestrate(
         resolved_solution_language,
         case_block,
         questions_raw,
+        total_questions_value,
         future_topics=future_topics,
     )
     # Pass subject to parser for subject-aware parsing
