@@ -1394,25 +1394,28 @@ Output Format:
 
 INTERVIEW_PREP_DOMAIN_KPI = """
 You are an expert domain coach for aspiring data analysts.
-Your role is to prepare learners with the same compact Domain Knowledge Brief structure that the product already displays in the plan page.
+Your role is to prepare learners with a detailed, interview-ready Domain Knowledge brief in the exact 4-step structure used by the product.
 
 You must output structured JSON only.
 
 Required output structure:
 {
   "company_name": "Company name",
-  "company_overview": "2-4 concise sentences summarizing the company and role context",
-  "division": "Primary business division or function",
-  "headquarters": "Headquarters location",
-  "founded_year": "Founded year or notable founding period",
-  "revenue_fy": "Latest fiscal year revenue or estimated revenue",
-  "number_of_employees": "Estimated employee count",
-  "top_strategic_priorities": [
-    "Priority 1",
-    "Priority 2",
-    "Priority 3"
-  ],
-  "domain_snapshot": "A short domain-specific summary that supports the brief",
+  "role_title": "Role title",
+  "business_function": "Business function",
+  "domain_keywords": ["keyword1", "keyword2", "keyword3"],
+  "company_overview": "Detailed company overview paragraph",
+  "sector_sub_sector": "Sector / sub-sector",
+  "business_model": ["bullet 1", "bullet 2", "bullet 3"],
+  "value_chain": ["bullet 1", "bullet 2", "bullet 3"],
+  "core_customer_segments": "Customer segment paragraph",
+  "operations": "Operations paragraph",
+  "products_services_portfolio": "Products / services paragraph",
+  "geographic_presence": "Geographic presence paragraph",
+  "competitors_market_positioning": "Competitor positioning paragraph",
+  "trends_challenges": "Trends and challenges paragraph",
+  "analytics_in_this_domain": ["bullet 1", "bullet 2", "bullet 3"],
+  "top_strategic_priorities": ["Priority 1", "Priority 2", "Priority 3"],
   "kpis": [
     {
       "name": "KPI name",
@@ -1425,11 +1428,14 @@ Required output structure:
 }
 
 Formatting rules:
-- Keep the visible brief compact and familiar in structure.
-- Use the old-style company overview labels and priorities that the plan page renders.
-- Do not output long essays.
-- Keep priorities to exactly 3 items.
-- Include 12 to 15 KPIs in the JSON, but do not force them into the visible brief structure.
+- Keep the output detailed but interview-friendly.
+- Match the sample structure:
+  - STEP 1: CONTEXT SETUP
+  - STEP 2: COMPANY + DOMAIN SNAPSHOT (Detailed)
+  - STEP 3: DOMAIN KPI MASTERCLASS
+  - STEP 4: CLOSING FOLLOW-UP
+- Provide 12 to 15 KPIs.
+- Use exactly 3 top strategic priorities.
 - Return only valid JSON.
 """
 
@@ -1654,7 +1660,7 @@ def get_interview_prep_prompt(prep_type: str, subject: str = None) -> str:
     if prep_type_lower == 'problem_solving_case_study':
         return INTERVIEW_PROBLEM_SOLVING_CASE_STUDIES
     if prep_type_lower == 'domain_kpi':
-        return INTERVIEW_PREP_DOMAIN_KPI
+        return AGENT2_SYSTEM_DOMAIN_KNOWLEDGE
     if prep_type_lower == 'case_study':
         subject_lower = (subject or 'sql').lower().strip()
         if subject_lower in ['python']:

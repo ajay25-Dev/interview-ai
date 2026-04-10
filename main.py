@@ -9,7 +9,7 @@ from adaptive_quiz_orchestrator import generate_mcq
 from playground_orchestrator import generate_topic_remediation
 from submission_service import evaluate_submission, generate_hint
 from mentor_chat_service import generate_mentor_response
-from prompts import get_interview_prep_prompt
+from prompts import AGENT2_SYSTEM_DOMAIN_KNOWLEDGE, get_interview_prep_prompt
 import json
 import re
 
@@ -855,18 +855,67 @@ class DomainKPIRequest(BaseModel):
     company_name: str
     job_description: Optional[str] = None
     domain: Optional[str] = None
+    role_title: Optional[str] = None
+    business_function: Optional[str] = None
 
 class DomainKPIResponse(BaseModel):
     company_name: Optional[str] = None
+    role_title: Optional[str] = None
+    business_function: Optional[str] = None
+    domain_keywords: Optional[List[str]] = None
     company_overview: str
-    division: Optional[str] = None
+    sector_sub_sector: Optional[str] = None
+    business_model: Optional[List[str]] = None
+    value_chain: Optional[List[str]] = None
+    core_customer_segments: Optional[str] = None
+    operations: Optional[str] = None
+    products_services_portfolio: Optional[str] = None
+    geographic_presence: Optional[str] = None
+    competitors_market_positioning: Optional[str] = None
+    trends_challenges: Optional[str] = None
+    analytics_in_this_domain: Optional[List[str]] = None
     headquarters: Optional[str] = None
     founded_year: Optional[str] = None
     revenue_fy: Optional[str] = None
     number_of_employees: Optional[str] = None
     top_strategic_priorities: Optional[List[str]] = None
+    division: Optional[str] = None
     domain_snapshot: str
     kpis: List[dict]
+
+def _flatten_domain_snapshot(snapshot: Any) -> str:
+    if snapshot is None:
+        return ""
+    if isinstance(snapshot, str):
+        return snapshot.strip()
+    if isinstance(snapshot, dict):
+        lines = []
+        sector = snapshot.get("sector") or snapshot.get("sector_sub_sector")
+        if sector:
+            lines.append(f"Sector / Sub-sector: {sector}")
+        for key, label in [
+            ("business_model", "Business Model"),
+            ("value_chain", "Value Chain"),
+            ("core_customer_segments", "Core Customer Segments"),
+            ("operations", "Operations"),
+            ("products_services_portfolio", "Products/Services Portfolio"),
+            ("geographic_presence", "Geographic Presence"),
+            ("competitors_market_positioning", "Competitors & Market Positioning"),
+            ("trends_challenges", "Trends & Challenges"),
+            ("analytics_in_this_domain", "Analytics in this Domain"),
+        ]:
+            value = snapshot.get(key)
+            if isinstance(value, list):
+                value_text = "; ".join(str(item).strip() for item in value if str(item).strip())
+            else:
+                value_text = str(value).strip() if value is not None else ""
+            if value_text:
+                lines.append(f"{label}: {value_text}")
+        return "\n".join(lines).strip()
+    if isinstance(snapshot, list):
+        values = [str(item).strip() for item in snapshot if str(item).strip()]
+        return "\n".join(values).strip()
+    return str(snapshot).strip()
 
 @app.post("/interview/domain-kpi", response_model=DomainKPIResponse)
 async def generate_domain_kpi(request: DomainKPIRequest):
@@ -875,28 +924,44 @@ async def generate_domain_kpi(request: DomainKPIRequest):
     if not request.company_name:
         raise ValueError("Company name is required")
 
-    prompt = get_interview_prep_prompt('domain_kpi')
+    prompt = AGENT2_SYSTEM_DOMAIN_KNOWLEDGE
     
     context = f"""
     Company: {request.company_name}
+    {f"Role Title: {request.role_title}" if request.role_title else ""}
+    {f"Business Function: {request.business_function}" if request.business_function else ""}
     {f"Domain/Industry: {request.domain}" if request.domain else ""}
     {f"Job Description: {request.job_description}" if request.job_description else "Assume general Data Analyst role"}
     
     Please provide:
-    1. A compact Domain Knowledge Brief in the same structure previously used by the app:
-       - Company Overview section
-       - Company
-       - Division
-       - Headquarters
-       - FoundedYear
-       - RevenueFY
-       - NumberOfEmployees
-       - Top 3 Strategic Priorities
-    2. 12-15 key KPIs with definition, formula, why it matters, and domain example
-    
+    1. STEP 1: CONTEXT SETUP
+       - Company Name
+       - Role Title
+       - Business Function
+       - Domain Keywords
+    2. STEP 2: COMPANY + DOMAIN SNAPSHOT (Detailed)
+       - Company Overview
+       - Sector / Sub-sector
+       - Business Model
+       - Value Chain
+       - Core Customer Segments
+       - Operations
+       - Products/Services Portfolio
+       - Geographic Presence
+       - Competitors & Market Positioning
+       - Trends & Challenges
+       - Analytics in this Domain
+    3. STEP 3: DOMAIN KPI MASTERCLASS
+       - 12-15 KPIs with definition, formula, why it matters, and domain example
+    4. STEP 4: CLOSING FOLLOW-UP
+       - Short interview-ready closing note
+   
     Format the response as JSON with structure:
     {{
         "company_name": "{request.company_name}",
+        "role_title": "{request.role_title or ''}",
+        "business_function": "{request.business_function or ''}",
+        "domain_keywords": ["...", "...", "..."],
         "company_overview": "...",
         "division": "...",
         "headquarters": "...",
@@ -904,7 +969,7 @@ async def generate_domain_kpi(request: DomainKPIRequest):
         "revenue_fy": "...",
         "number_of_employees": "...",
         "top_strategic_priorities": ["...", "...", "..."],
-        "domain_snapshot": "...",
+        "domain_snapshot": "Plain text only, not a nested object",
         "kpis": [
             {{
                 "name": "KPI name",
@@ -936,6 +1001,9 @@ async def generate_domain_kpi(request: DomainKPIRequest):
             import json
             result = json.loads(result_text)
             print("[/interview/domain-kpi] Successfully parsed JSON response")
+            result["domain_snapshot"] = _flatten_domain_snapshot(
+                result.get("domain_snapshot")
+            )
             return DomainKPIResponse(**result)
         except json.JSONDecodeError as parse_error:
             print(f"[/interview/domain-kpi] JSON parse error: {parse_error}")
@@ -944,6 +1012,9 @@ async def generate_domain_kpi(request: DomainKPIRequest):
             if json_match:
                 print("[/interview/domain-kpi] Extracted JSON from response using regex")
                 result = json.loads(json_match.group())
+                result["domain_snapshot"] = _flatten_domain_snapshot(
+                    result.get("domain_snapshot")
+                )
                 return DomainKPIResponse(**result)
             else:
                 raise ValueError("Could not parse AI response as JSON")
