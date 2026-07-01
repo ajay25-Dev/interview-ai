@@ -536,6 +536,8 @@ Coverage Guarantee (Very Important):
 
 Before emitting final output, mentally self-test each answer against your synthetic dataset.
 
+  If a "Previously Generated Questions Context" is provided, generate only new questions that continue the progression and do not repeat or paraphrase those existing questions.
+
   If any answer would return 0 rows (and the question is not meant to be empty), add or adjust seed rows until at least one row satisfies the filters.
 
   Keep dataset minimal but sufficient (avoid bloat). 
@@ -648,6 +650,7 @@ Dataset Creation Coding Language: {dataset_creation_coding_language}
 Coding Language: {coding_language}
 Requested Question Count: {total_questions}
 Future Topics (Do Not Use): {future_topics}
+Previously Generated Questions Context: {previous_questions_context}
 
 Case Study:
 {case_study_text}
