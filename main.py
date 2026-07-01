@@ -17,7 +17,8 @@ load_dotenv()
 
 os.environ["OPENAI_API_KEY"] = os.getenv('OPENAI_API_KEY')
 client = OpenAI()
-JD_EXTRACTION_MODEL = os.getenv("JD_EXTRACTION_MODEL", "gpt-4o-mini")
+JD_EXTRACTION_MODEL = os.getenv("JD_EXTRACTION_MODEL", "gpt-5.4")
+TOPIC_HIERARCHY_MODEL = os.getenv("TOPIC_HIERARCHY_MODEL", "gpt-5.4")
 
 app = FastAPI()
 
@@ -499,6 +500,9 @@ class InterviewSkillSummary(BaseModel):
 
 class ExtractJDResponse(BaseModel):
     role_title: str
+    company_name: Optional[str] = None
+    location: Optional[str] = None
+    years_of_experience: Optional[str] = None
     key_skills: List[str]
     domains: List[str]
     suggested_subjects: List[str]
@@ -638,6 +642,9 @@ def _build_fallback_extract_jd_response(request: ExtractJDRequest, notes: Option
 
     return ExtractJDResponse(
         role_title=role_title,
+        company_name=request.company_name or None,
+        location=None,
+        years_of_experience=None,
         key_skills=key_skills,
         domains=domains,
         suggested_subjects=suggested_subjects,
@@ -729,8 +736,28 @@ def _normalize_extract_jd_payload(payload: dict, request: ExtractJDRequest) -> E
     if not summary.role:
         summary.role = role_title
 
+    company_name = _first_non_empty_string(
+        payload.get("company_name"),
+        payload.get("company"),
+        request.company_name,
+        summary.company,
+    )
+    location = _first_non_empty_string(payload.get("location"), payload.get("location_type"))
+    years_of_experience = _first_non_empty_string(
+        payload.get("years_of_experience"),
+        payload.get("experience_required"),
+        payload.get("years_experience"),
+    )
+
+    # Keep summary company in sync
+    if company_name and not summary.company:
+        summary.company = company_name
+
     return ExtractJDResponse(
         role_title=role_title,
+        company_name=company_name,
+        location=location,
+        years_of_experience=years_of_experience,
         key_skills=key_skills,
         domains=domains,
         suggested_subjects=suggested_subjects,
@@ -741,65 +768,59 @@ def _normalize_extract_jd_payload(payload: dict, request: ExtractJDRequest) -> E
 
 @app.post("/interview/extract-jd", response_model=ExtractJDResponse)
 async def extract_jd_info(request: ExtractJDRequest):
+    import time as _time
+    _t0 = _time.perf_counter()
     print("[/interview/extract-jd] incoming request")
-    
+
     if not request.job_description or not request.job_description.strip():
         raise HTTPException(status_code=400, detail="Job description cannot be empty")
 
     prompt = f"""
-    You are a senior hiring manager and interview expert.
+You are a senior hiring manager and interview expert. Extract structured information from the job description below for interview preparation.
 
-    Your task is to extract structured information for interview preparation AND identify the KEY SKILLS
-    that will be tested in interviews based on the input.
+INPUT:
+Job Description: {request.job_description}
+Company Name (hint): {request.company_name or 'Not specified — extract from JD'}
+Role (hint): {request.role or 'Not specified — extract from JD'}
+Optional User Skills: {request.user_skills or 'Not specified'}
 
-    INPUT:
-    Job Description: {request.job_description}
-    Company Name: {request.company_name or 'Not specified'}
-    Role: {request.role or 'Not specified'}
-    Optional User Skills: {request.user_skills or 'Not specified'}
-
-    OUTPUT FORMAT (STRICT JSON ONLY — NO TEXT OUTSIDE JSON):
-    {{
-        "role_title": "The job title/role name",
-        "key_skills": ["skill1", "skill2", "skill3", ...],
-        "domains": ["domain1", "domain2", ...],
-        "suggested_subjects": ["SQL", "Python", "Excel", ...],
-        "experience_level": "entry/junior/mid/senior",
-        "key_responsibilities": ["responsibility1", "responsibility2", ...],
-        "interview_skill_summary": {{
-            "company": "{request.company_name or ''}",
-            "role": "{request.role or ''}",
-            "core_technical_skills": [
-                {{"skill": "", "priority": 1}}
-            ],
-            "supporting_skills": [
-                {{"skill": "", "priority": 1}}
-            ],
-            "thinking_business_skills": [
-                {{"skill": "", "priority": 1}}
-            ],
-            "recommended_preparation_focus": [
-                {{"skill": "", "type": "", "reason": ""}}
-            ],
-            "notes": ""
-        }}
+OUTPUT FORMAT (STRICT JSON ONLY — NO TEXT OUTSIDE JSON):
+{{
+    "role_title": "Exact job title from JD",
+    "company_name": "Company name extracted from JD (or null if not found)",
+    "location": "City, State/Country or Remote/Hybrid (or null if not mentioned)",
+    "years_of_experience": "e.g. '3-5 years' or '2+ years' extracted from JD (or null)",
+    "key_skills": ["skill1", "skill2", ...],
+    "domains": ["domain1", "domain2"],
+    "suggested_subjects": ["SQL", "Python", "Excel", ...],
+    "experience_level": "entry | junior | mid | senior",
+    "key_responsibilities": ["responsibility1", "responsibility2", "responsibility3", "responsibility4"],
+    "interview_skill_summary": {{
+        "company": "same as company_name above",
+        "role": "same as role_title above",
+        "core_technical_skills": [{{"skill": "skill name", "priority": 1}}],
+        "supporting_skills": [{{"skill": "skill name", "priority": 1}}],
+        "thinking_business_skills": [{{"skill": "skill name", "priority": 1}}],
+        "recommended_preparation_focus": [{{"skill": "skill name", "type": "coding|analytics|case|theory|behavioral", "reason": "why this matters"}}],
+        "notes": ""
     }}
+}}
 
-    RULES FOR KEY SKILLS (interview_skill_summary):
-    - If Job Description is provided: extract required skills from it.
-    - If only Company + Role is provided: infer realistic interview skills based on industry standards.
-    - Classify skills into Core Technical, Supporting, Thinking & Business.
-    - Rank skills by interview frequency and role/company importance.
-    - For recommended_preparation_focus, include "type" from: coding, analytics, case, theory, behavioral.
-    - Keep top 3–5 skills in core. Avoid generic answers.
-
-    NOTES FOR BASE FIELDS:
-    - key_skills: Extract 5-10 most important technical skills
-    - domains: Extract 2-3 business domains (e.g., Finance, Healthcare, Retail)
-    - suggested_subjects: Which subjects would be most relevant (from: SQL, Python, Excel, Statistics, Power BI, R)
-    - experience_level: Infer from JD language
-    - key_responsibilities: Extract 3-4 main responsibilities
-    """
+EXTRACTION RULES:
+- role_title: Use the exact title from JD heading (e.g. "Senior Data Analyst", not generic "Analyst")
+- company_name: Look for "About [Company]", "At [Company]", "Join [Company]", or the header line. Return null if truly absent.
+- location: Look for location line near top of JD. Include "Remote", "Hybrid", or city name.
+- years_of_experience: Extract the exact range mentioned (e.g. "3+ years", "2-4 years"). Return null if not mentioned.
+- key_skills: Extract 5-10 most important technical skills explicitly mentioned
+- domains: 2-3 business domains from context (Finance, E-commerce, Healthcare, SaaS, etc.)
+- suggested_subjects: Only from this list — SQL, Python, Excel, Statistics, Power BI, R, Google Sheets. Choose based on skills required.
+- experience_level: entry (<1yr), junior (1-2yr), mid (3-5yr), senior (5+yr)
+- key_responsibilities: Extract 3-4 main job duties verbatim or closely paraphrased
+- core_technical_skills: Top 3-5 technical skills by interview frequency for this role
+- supporting_skills: Secondary technical skills
+- thinking_business_skills: Soft/business/communication skills
+- recommended_preparation_focus: Top 3-4 skills to prepare for interview with type and reason
+"""
 
     try:
         print("[/interview/extract-jd] Calling OpenAI API...")
@@ -809,13 +830,13 @@ async def extract_jd_info(request: ExtractJDRequest):
                 {"role": "system", "content": "You are a job description analyst. Extract structured information for interview preparation. Return ONLY valid JSON, no other text."},
                 {"role": "user", "content": prompt}
             ],
-            temperature=0,
-            max_tokens=900,
+            max_completion_tokens=2000,
             response_format={"type": "json_object"},
         )
 
+        _llm_ms = round((_time.perf_counter() - _t0) * 1000)
         result_text = response.choices[0].message.content.strip()
-        print("[/interview/extract-jd] OpenAI response:", result_text)
+        print(f"[/interview/extract-jd] LLM responded in {_llm_ms}ms")
         parsed_payload = None
         try:
             parsed_payload = json.loads(result_text)
@@ -833,26 +854,165 @@ async def extract_jd_info(request: ExtractJDRequest):
 
         if isinstance(parsed_payload, dict):
             try:
-                return _normalize_extract_jd_payload(parsed_payload, request)
+                result = _normalize_extract_jd_payload(parsed_payload, request)
+                print(f"[/interview/extract-jd] ✅ Total time: {round((_time.perf_counter() - _t0) * 1000)}ms")
+                return result
             except Exception as normalize_error:
                 print(f"[/interview/extract-jd] Normalization error: {normalize_error}")
-                return _build_fallback_extract_jd_response(
+                result = _build_fallback_extract_jd_response(
                     request,
                     notes=f"Fallback extraction used after normalization error: {normalize_error}",
                 )
+                print(f"[/interview/extract-jd] ⚠️ Fallback total time: {round((_time.perf_counter() - _t0) * 1000)}ms")
+                return result
 
         print("[/interview/extract-jd] Falling back to heuristic extraction due to invalid AI payload")
-        return _build_fallback_extract_jd_response(
+        result = _build_fallback_extract_jd_response(
             request,
             notes="Fallback extraction used because the model returned invalid JSON.",
         )
+        print(f"[/interview/extract-jd] ⚠️ Fallback total time: {round((_time.perf_counter() - _t0) * 1000)}ms")
+        return result
 
     except Exception as e:
         print(f"[/interview/extract-jd] Error: {type(e).__name__}: {e}")
-        return _build_fallback_extract_jd_response(
+        result = _build_fallback_extract_jd_response(
             request,
             notes=f"Fallback extraction used because the AI service failed: {type(e).__name__}",
         )
+        print(f"[/interview/extract-jd] ❌ Error total time: {round((_time.perf_counter() - _t0) * 1000)}ms")
+        return result
+
+# ─── Dynamic Topic Hierarchy ──────────────────────────────────────────────────
+
+class TopicHierarchyRequest(BaseModel):
+    subject: str                          # e.g. "SQL", "Python"
+    years_of_experience: Optional[str] = None   # e.g. "2-5 Years" from JD
+    experience_level: Optional[str] = None      # entry / mid / senior
+    role_title: Optional[str] = None             # e.g. "Data Analyst"
+    job_description: Optional[str] = None        # raw JD text for extra context
+
+class TopicHierarchyResponse(BaseModel):
+    subject: str
+    topic: str
+    topic_hierarchy: str
+    learner_level: str
+
+@app.post("/interview/topic-hierarchy", response_model=TopicHierarchyResponse)
+async def get_topic_hierarchy(request: TopicHierarchyRequest):
+    import time as _time
+    _t0 = _time.perf_counter()
+    print(f"[/interview/topic-hierarchy] subject={request.subject!r} experience={request.years_of_experience!r}")
+
+    subject = request.subject or "SQL"
+    years = request.years_of_experience or ""
+    level = (request.experience_level or "mid").lower()
+    role = request.role_title or "Data Analyst"
+
+    # Derive a readable learner label from years or level
+    def _resolve_learner_label(years_str: str, level_str: str) -> str:
+        y = years_str.strip().lower()
+        # Parse first number from string like "2-5 Years" or "3+ years"
+        import re as _re
+        nums = _re.findall(r'\d+', y)
+        if nums:
+            low = int(nums[0])
+            if low < 2:
+                return "beginner"
+            elif low < 5:
+                return "intermediate"
+            else:
+                return "advanced"
+        lv = level_str.strip().lower()
+        if lv in ("entry", "junior", "fresher", "beginner"):
+            return "beginner"
+        if lv in ("senior", "lead", "principal", "advanced"):
+            return "advanced"
+        return "intermediate"
+
+    learner_label = _resolve_learner_label(years, level)
+
+    prompt = f"""You are a senior data analytics interview coach.
+
+A candidate is preparing for the role: "{role}"
+Their experience level: {years or level} ({learner_label})
+Subject they need to practice: {subject}
+
+Your task: choose the most relevant TOPIC and TOPIC_HIERARCHY for this candidate to focus on in their interview preparation for {subject}.
+
+Rules:
+- topic: a single focused concept (2-5 words) that is most likely to be tested at this experience level
+- topic_hierarchy: a comma-separated ordered list of 4-7 concepts, starting from foundational and progressing to the topic level. Match the candidate's experience — don't include basics they already know if they're senior, don't include advanced topics if they're a beginner.
+- Keep topic_hierarchy tight and interview-relevant. No padding.
+
+Examples by level for SQL:
+- beginner (0-2 yrs): topic="Basic Queries", topic_hierarchy="SELECT, WHERE, ORDER BY, GROUP BY, HAVING"
+- intermediate (2-5 yrs): topic="Joins & Window Functions", topic_hierarchy="Joins, Subqueries, GROUP BY, HAVING, Window Functions, CTEs"
+- advanced (5+ yrs): topic="Query Optimization", topic_hierarchy="Window Functions, CTEs, Indexing, Execution Plans, Query Optimization, Partitioning"
+
+Return ONLY valid JSON — no extra text:
+{{
+  "topic": "<focused topic>",
+  "topic_hierarchy": "<comma-separated ordered list>"
+}}"""
+
+    try:
+        response = client.chat.completions.create(
+            model=TOPIC_HIERARCHY_MODEL,
+            messages=[
+                {"role": "system", "content": "You are an interview preparation expert. Return ONLY valid JSON, no other text."},
+                {"role": "user", "content": prompt}
+            ],
+            max_completion_tokens=200,
+            response_format={"type": "json_object"},
+        )
+        result_text = response.choices[0].message.content.strip()
+        _ms = round((_time.perf_counter() - _t0) * 1000)
+        print(f"[/interview/topic-hierarchy] ✅ {subject} → {_ms}ms")
+
+        parsed = json.loads(result_text)
+        topic = str(parsed.get("topic") or subject).strip()
+        topic_hierarchy = str(parsed.get("topic_hierarchy") or topic).strip()
+
+        return TopicHierarchyResponse(
+            subject=subject,
+            topic=topic,
+            topic_hierarchy=topic_hierarchy,
+            learner_level=learner_label,
+        )
+
+    except Exception as e:
+        _ms = round((_time.perf_counter() - _t0) * 1000)
+        print(f"[/interview/topic-hierarchy] ❌ Error ({_ms}ms): {e}")
+        # Fallback to static defaults
+        _DEFAULTS = {
+            "sql":        {"beginner": ("Basic Queries", "SELECT, WHERE, ORDER BY, GROUP BY, HAVING"),
+                           "intermediate": ("Joins & Window Functions", "Joins, Subqueries, GROUP BY, HAVING, Window Functions, CTEs"),
+                           "advanced": ("Query Optimisation", "Window Functions, CTEs, Indexing, Execution Plans, Query Optimisation")},
+            "python":     {"beginner": ("Data Basics", "Variables, Data Types, Functions, Loops, Basic Pandas"),
+                           "intermediate": ("Data Frames", "Pandas, GroupBy, Merge, Matplotlib, Data Cleaning"),
+                           "advanced": ("Advanced Analytics", "Pandas, NumPy, Scikit-learn, APIs, Performance Optimisation")},
+            "excel":      {"beginner": ("Core Formulas", "SUM, IF, VLOOKUP, Basic Pivot Tables"),
+                           "intermediate": ("Data Analysis", "VLOOKUP, Pivot Tables, Conditional Formatting, Charts"),
+                           "advanced": ("Advanced Excel", "INDEX-MATCH, Power Query, Array Formulas, Dynamic Dashboards")},
+            "statistics": {"beginner": ("Descriptive Stats", "Mean, Median, Variance, Standard Deviation"),
+                           "intermediate": ("Inferential Stats", "Hypothesis Testing, p-value, Confidence Intervals"),
+                           "advanced": ("Advanced Analytics", "Regression, ANOVA, Bayesian Thinking, A/B Testing")},
+            "power bi":   {"beginner": ("Basic Reports", "Data Import, Basic Visuals, Filters, Slicers"),
+                           "intermediate": ("DAX & Modeling", "DAX Measures, Relationships, Visualizations"),
+                           "advanced": ("Advanced Modeling", "Row Context, Filter Context, Star Schema, Row-Level Security")},
+        }
+        key = subject.lower()
+        defaults = _DEFAULTS.get(key, {}).get(learner_label)
+        if not defaults:
+            defaults = (subject, subject)
+        return TopicHierarchyResponse(
+            subject=subject,
+            topic=defaults[0],
+            topic_hierarchy=defaults[1],
+            learner_level=learner_label,
+        )
+
 
 class DomainKPIRequest(BaseModel):
     company_name: str
@@ -1279,7 +1439,7 @@ async def generate_subject_prep(request: SubjectPrepRequest):
                         "description": description,
                         "dataset_overview": case.get("dataset_overview") or description,
                         "problem_statement": problem_statement,
-                        "questions": [],
+                        "questions": case.get("questions") or [],
                         "estimated_time_minutes": case.get("estimated_time_minutes", 45)
                     })
                 case_studies = normalized_case_studies

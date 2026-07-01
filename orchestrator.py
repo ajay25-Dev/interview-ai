@@ -474,9 +474,9 @@ def _extract_csv_dataset_info(block: str) -> Optional[Dict[str, Any]]:
     if not block or not isinstance(block, str):
         return None
 
-    # Remove code fences if present
-    cleaned = re.sub(r"^```[\w+-]*\s*", "", block.strip())
-    cleaned = re.sub(r"\s*```$", "", cleaned)
+    # Remove code fences if present, including malformed one-line fences like
+    # ```excel; that can leak through from the LLM.
+    cleaned = _strip_markdown_fences(block)
     
     match = re.search(r"@DATA_CREATION_SHEETS\s*(.*)", cleaned, re.DOTALL)
     
@@ -572,6 +572,8 @@ def _materialize_sql_datasets(sql_block: Optional[str]) -> Optional[List[Dict[st
     """
     if not sql_block or not isinstance(sql_block, str) or not sql_block.strip():
         return None
+
+    sql_block = _normalize_duckdb_sql(sql_block)
 
     tmp_file = tempfile.NamedTemporaryFile(delete=False, suffix=".db")
     db_path = tmp_file.name
@@ -850,11 +852,50 @@ def _normalize_duckdb_sql(sql: str) -> str:
     """
     Normalize SQL for DuckDB compatibility.
     Currently fixes common LLM output of backslash-escaped single quotes by
-    converting them to doubled single quotes.
+    converting them to doubled single quotes and strips markdown code fences
+    that sometimes leak from the model output.
     """
     if not isinstance(sql, str):
         return sql
-    return sql.replace("\\'", "''")
+    cleaned = _strip_markdown_fences(sql)
+    return cleaned.replace("\\'", "''")
+
+
+def _strip_markdown_fences(text: str) -> str:
+    """
+    Remove markdown code fence wrappers and fence marker lines from generated
+    SQL / CSV blocks.
+
+    The LLM can return fenced content in a few malformed shapes:
+    - ```sql
+    - ```excel;
+    - ```\n...\n```
+    This helper strips those markers so downstream SQLite/CSV parsers see only
+    executable content.
+    """
+    if not isinstance(text, str):
+        return text
+
+    cleaned = text.replace("\ufeff", "").replace("\u200b", "").strip()
+    if not cleaned:
+        return cleaned
+
+    # Remove an outer opening fence, even if it has extra suffix text like
+    # "```excel;" on the same line.
+    cleaned = re.sub(r"^\s*```[^\r\n]*\r?\n?", "", cleaned)
+    cleaned = re.sub(r"\r?\n?\s*```\s*$", "", cleaned)
+
+    lines: List[str] = []
+    for raw_line in cleaned.splitlines():
+        line = raw_line.strip()
+        if not line:
+            lines.append(raw_line)
+            continue
+        if line.startswith("```"):
+            continue
+        lines.append(raw_line)
+
+    return "\n".join(lines).strip()
 
 def _shorten_sql_preview(sql: str, limit: int = 160) -> str:
     compact = " ".join(sql.split())
@@ -1009,6 +1050,7 @@ def generate_code(
     questions_block: str,
     total_questions: int = 8,
     future_topics: Optional[Any] = None,
+    previous_questions_context: Optional[Any] = None,
 ) -> str:
     # Pass subject to get subject-aware prompt
     resolved_dataset_language = (
@@ -1024,6 +1066,16 @@ def generate_code(
         else "SQL"
     )
     normalized_solution_language = resolved_solution_language.lower()
+    if isinstance(previous_questions_context, str):
+        previous_questions_context_text = previous_questions_context.strip()
+    elif isinstance(previous_questions_context, (list, tuple, set)):
+        previous_questions_context_text = "\n".join(
+            f"- {str(item).strip()}"
+            for item in previous_questions_context
+            if str(item).strip()
+        )
+    else:
+        previous_questions_context_text = ""
     agent2_subject = (
         "non_coding" if normalized_solution_language == "non_coding" else subject
     )
@@ -1040,6 +1092,7 @@ def generate_code(
         case_study_text=case_study_text,
         questions_block=questions_block,
         future_topics=_format_future_topics_for_prompt(future_topics),
+        previous_questions_context=previous_questions_context_text,
     )
     resp = llm.invoke(messages)
     # print("generate_code", resp)
@@ -1077,6 +1130,7 @@ def orchestrate(
     solution_coding_language: Optional[Any] = None,
     verify_locally=True,
     future_topics: Optional[Any] = None,
+    previous_questions_context: Optional[Any] = None,
 ):
     normalized_field = field.strip().lower() if isinstance(field, str) else ""
     resolved_dataset_language = (
@@ -1187,6 +1241,7 @@ def orchestrate(
         questions_raw,
         total_questions_value,
         future_topics=future_topics,
+        previous_questions_context=previous_questions_context,
     )
     # Pass subject to parser for subject-aware parsing
     parser_subject = "non_coding" if is_non_coding else subject
@@ -1406,6 +1461,19 @@ def orchestrate(
         for q in questions_raw_list
     }
 
+    _CODING_WITH_DATA = {"sql", "python", "statistics", "google_sheets", "google sheets", "excel", "power_bi", "sheets"}
+    _CODING_WITHOUT_DATA = {"javascript", "java", "cpp", "c", "dsa", "programming", "coding", "typescript", "kotlin", "swift", "go", "rust", "php"}
+    _SUBJECTIVE = {"reasoning", "math", "mathematics", "geometry", "problem_solving", "communication", "behavioral", "case_study", "mental_ability"}
+    _s = subject.strip().lower() if isinstance(subject, str) else ""
+    if _s in _CODING_WITH_DATA:
+        subject_category = "coding_with_data"
+    elif _s in _CODING_WITHOUT_DATA:
+        subject_category = "coding_without_data"
+    elif _s in _SUBJECTIVE:
+        subject_category = "subjective"
+    else:
+        subject_category = "coding_with_data" if not is_non_coding else "subjective"
+
     result = {
         "header_text": header_text,
         "business_context": business_context,
@@ -1414,7 +1482,9 @@ def orchestrate(
         "questions_raw": questions_raw_list,
         "expected_cols_list": expected_cols_list,
         "data_creation_sql": final_data_creation_sql,
-        "answers_sql_map": answers_sql_map_schema
+        "answers_sql_map": answers_sql_map_schema,
+        "subject_category": subject_category,
+        "solution_coding_language": resolved_solution_language,
     }
 
     domain_knowledge_text = parsed2.get("domain_knowledge_text")
