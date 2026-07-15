@@ -16,6 +16,164 @@ from verify_sqlite import exec_batch, run_query, check_columns
 from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate
 
+_CODING_WITH_DATA = {
+    "sql",
+    "python",
+    "statistics",
+    "google_sheets",
+    "google sheets",
+    "excel",
+    "power_bi",
+    "sheets",
+    "machine learning",
+    "ml",
+    "deep learning",
+    "nlp",
+    "data science",
+    "product analytics",
+    "ab testing",
+    "a/b testing",
+    "experimentation",
+    "tableau",
+}
+_CODING_WITHOUT_DATA = {
+    "javascript",
+    "java",
+    "cpp",
+    "c",
+    "dsa",
+    "programming",
+    "coding",
+    "typescript",
+    "kotlin",
+    "swift",
+    "go",
+    "rust",
+    "php",
+}
+_SUBJECTIVE = {
+    "reasoning",
+    "math",
+    "mathematics",
+    "geometry",
+    "problem_solving",
+    "communication",
+    "behavioral",
+    "case_study",
+    "mental_ability",
+    "product sense",
+    "business case",
+    "guesstimate",
+    "guess estimate",
+}
+
+def _extract_json_object(text: str) -> Dict[str, Any]:
+    cleaned = text.strip()
+    cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"\s*```$", "", cleaned)
+    try:
+        parsed = json.loads(cleaned)
+        return parsed if isinstance(parsed, dict) else {}
+    except Exception:
+        match = re.search(r"\{.*\}", cleaned, re.DOTALL)
+        if match:
+            try:
+                parsed = json.loads(match.group())
+                return parsed if isinstance(parsed, dict) else {}
+            except Exception:
+                return {}
+        return {}
+
+def _deterministic_subject_category(subject: str) -> Optional[str]:
+    normalized = subject.strip().lower() if isinstance(subject, str) else ""
+    if not normalized:
+        return None
+    if normalized in _CODING_WITH_DATA:
+        return "coding_with_data"
+    if normalized in _CODING_WITHOUT_DATA:
+        return "coding_without_data"
+    if normalized in _SUBJECTIVE:
+        return "subjective"
+    return None
+
+def _classify_subject_category(
+    subject: str,
+    field: str,
+    topic: str,
+    topic_hierarchy: str,
+    solution_coding_language: str,
+    is_non_coding: bool,
+) -> Dict[str, str]:
+    deterministic = _deterministic_subject_category(subject)
+    if deterministic:
+        return {
+            "subject_category": deterministic,
+            "classification_reason": "deterministic_subject_mapping",
+        }
+
+    fallback = "subjective" if is_non_coding else "coding_with_data"
+    llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)
+    prompt = ChatPromptTemplate.from_messages([
+        (
+            "system",
+            """Classify interview preparation subjects into exactly one category.
+
+Allowed categories:
+- coding_with_data: solving work with datasets, tables, BI tools, experimentation, ML models, analytics workflows
+- coding_without_data: programming, implementation, algorithms, language syntax, system logic without dataset analysis
+- subjective: conceptual, business, communication, case discussion, reasoning, explanation-heavy, non-runnable answers
+- dsa: data structures and algorithms interview problems
+
+Return JSON only:
+{
+  "subject_category": "coding_with_data|coding_without_data|subjective|dsa",
+  "reason": "short reason"
+}
+
+Classification rules:
+- Machine Learning, Data Science, NLP, Deep Learning, Experimentation, A/B Testing, Tableau, Product Analytics => coding_with_data
+- Product Sense, Communication, Behavioral, Business Case, Guesstimate => subjective
+- If a subject typically needs SQL, Python, dashboards, statistical analysis, metrics, or datasets, prefer coding_with_data.
+- If a subject is ambiguous, use the topic hierarchy and solution coding language to decide.
+- Never return anything except valid JSON.""",
+        ),
+        (
+            "user",
+            """Subject: {subject}
+Field: {field}
+Topic: {topic}
+Topic Hierarchy: {topic_hierarchy}
+Solution Coding Language: {solution_coding_language}
+Non-coding mode: {is_non_coding}""",
+        ),
+    ])
+
+    try:
+        response = (prompt | llm).invoke(
+            {
+                "subject": subject,
+                "field": field,
+                "topic": topic,
+                "topic_hierarchy": topic_hierarchy,
+                "solution_coding_language": solution_coding_language,
+                "is_non_coding": is_non_coding,
+            }
+        ).content
+        parsed = _extract_json_object(response)
+        category = str(parsed.get("subject_category") or "").strip().lower()
+        if category in {"coding_with_data", "coding_without_data", "subjective", "dsa"}:
+            return {
+                "subject_category": category,
+                "classification_reason": str(parsed.get("reason") or "ai_subject_classification"),
+            }
+    except Exception as exc:
+        print(f"Subject classification failed for {subject!r}: {exc}")
+
+    return {
+        "subject_category": fallback,
+        "classification_reason": "fallback_default",
+    }
+
 def _repair_case_output(previous_raw: str) -> str:
     """
     One-shot format repair: re-wrap the prior output exactly between the required tags.
@@ -1461,18 +1619,15 @@ def orchestrate(
         for q in questions_raw_list
     }
 
-    _CODING_WITH_DATA = {"sql", "python", "statistics", "google_sheets", "google sheets", "excel", "power_bi", "sheets"}
-    _CODING_WITHOUT_DATA = {"javascript", "java", "cpp", "c", "dsa", "programming", "coding", "typescript", "kotlin", "swift", "go", "rust", "php"}
-    _SUBJECTIVE = {"reasoning", "math", "mathematics", "geometry", "problem_solving", "communication", "behavioral", "case_study", "mental_ability"}
-    _s = subject.strip().lower() if isinstance(subject, str) else ""
-    if _s in _CODING_WITH_DATA:
-        subject_category = "coding_with_data"
-    elif _s in _CODING_WITHOUT_DATA:
-        subject_category = "coding_without_data"
-    elif _s in _SUBJECTIVE:
-        subject_category = "subjective"
-    else:
-        subject_category = "coding_with_data" if not is_non_coding else "subjective"
+    classification = _classify_subject_category(
+        subject=subject,
+        field=field,
+        topic=topic,
+        topic_hierarchy=topic_hierarchy,
+        solution_coding_language=resolved_solution_language,
+        is_non_coding=is_non_coding,
+    )
+    subject_category = classification["subject_category"]
 
     result = {
         "header_text": header_text,
@@ -1484,6 +1639,7 @@ def orchestrate(
         "data_creation_sql": final_data_creation_sql,
         "answers_sql_map": answers_sql_map_schema,
         "subject_category": subject_category,
+        "subject_category_reason": classification.get("classification_reason"),
         "solution_coding_language": resolved_solution_language,
     }
 

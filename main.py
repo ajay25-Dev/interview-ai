@@ -4,7 +4,11 @@ from typing import Optional, List, Literal, Any
 import os
 from dotenv import load_dotenv
 from openai import OpenAI
-from orchestrator import orchestrate, generate_interview_questions as build_interview_questions
+from orchestrator import (
+    orchestrate,
+    generate_interview_questions as build_interview_questions,
+    _classify_subject_category,
+)
 from adaptive_quiz_orchestrator import generate_mcq
 from playground_orchestrator import generate_topic_remediation
 from submission_service import evaluate_submission, generate_hint
@@ -192,6 +196,25 @@ class GenerateInterviewQuestionsResponse(BaseModel):
     total_questions: int
     questions: List[InterviewQuestionItem]
 
+class SubjectCategoryRequestItem(BaseModel):
+    subject: str
+    field: Optional[str] = "Data Analytics"
+    topic: Optional[str] = None
+    topic_hierarchy: Optional[str] = None
+    solution_coding_language: Optional[str] = None
+    is_non_coding: Optional[bool] = False
+
+class SubjectCategoryBatchRequest(BaseModel):
+    subjects: List[SubjectCategoryRequestItem]
+
+class SubjectCategoryItemResponse(BaseModel):
+    subject: str
+    subject_category: Literal["coding_with_data", "coding_without_data", "subjective", "dsa"]
+    reason: Optional[str] = None
+
+class SubjectCategoryBatchResponse(BaseModel):
+    items: List[SubjectCategoryItemResponse]
+
 @app.post("/generate")
 async def generate_case_study(request: OrchestrateRequest):
     params = request.dict()
@@ -199,6 +222,30 @@ async def generate_case_study(request: OrchestrateRequest):
     result = orchestrate(**params)
     # print(result)
     return result
+
+@app.post("/interview/subject-categories", response_model=SubjectCategoryBatchResponse)
+async def classify_subject_categories(request: SubjectCategoryBatchRequest):
+    print("[/interview/subject-categories] incoming subjects:", [item.subject for item in request.subjects])
+    items: List[SubjectCategoryItemResponse] = []
+
+    for item in request.subjects:
+        classification = _classify_subject_category(
+            subject=item.subject,
+            field=item.field or "Data Analytics",
+            topic=item.topic or item.subject,
+            topic_hierarchy=item.topic_hierarchy or item.subject,
+            solution_coding_language=item.solution_coding_language or item.subject,
+            is_non_coding=bool(item.is_non_coding),
+        )
+        items.append(
+            SubjectCategoryItemResponse(
+                subject=item.subject,
+                subject_category=classification["subject_category"],
+                reason=classification.get("classification_reason"),
+            )
+        )
+
+    return SubjectCategoryBatchResponse(items=items)
 
 def _parse_json_response_text(result_text: str):
     cleaned = result_text.strip()
