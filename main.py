@@ -13,7 +13,10 @@ from adaptive_quiz_orchestrator import generate_mcq
 from playground_orchestrator import generate_topic_remediation
 from submission_service import evaluate_submission, generate_hint
 from mentor_chat_service import generate_mentor_response
-from prompts import AGENT2_SYSTEM_DOMAIN_KNOWLEDGE, get_interview_prep_prompt
+from prompts import (
+    INTERVIEW_PREP_DOMAIN_KPI,
+    get_interview_prep_prompt,
+)
 import json
 import re
 
@@ -526,6 +529,7 @@ class ExtractJDRequest(BaseModel):
     company_name: Optional[str] = None
     role: Optional[str] = None
     user_skills: Optional[str] = None
+    industry: Optional[str] = None
 
 class InterviewSkillItem(BaseModel):
     skill: str
@@ -550,12 +554,23 @@ class ExtractJDResponse(BaseModel):
     company_name: Optional[str] = None
     location: Optional[str] = None
     years_of_experience: Optional[str] = None
+    industry: Optional[str] = None
     key_skills: List[str]
     domains: List[str]
     suggested_subjects: List[str]
     experience_level: str
     key_responsibilities: List[str]
     interview_skill_summary: Optional[InterviewSkillSummary] = None
+
+
+VALID_INDUSTRIES = {"tech", "finance", "healthcare", "education", "ecommerce", "other"}
+INDUSTRY_KEYWORDS = {
+    "finance": ["bank", "banking", "nbfc", "loan", "lending", "credit", "risk", "fintech"],
+    "healthcare": ["healthcare", "medical", "hospital", "pharma", "biotech", "patient"],
+    "education": ["education", "edtech", "learning", "school", "university", "curriculum"],
+    "ecommerce": ["ecommerce", "e-commerce", "retail", "marketplace", "shopping", "merchant", "catalog"],
+    "tech": ["saas", "software", "cloud", "platform", "product", "technology", "data", "ai"],
+}
 
 def _first_non_empty_string(*values: Any) -> Optional[str]:
     for value in values:
@@ -651,6 +666,38 @@ def _normalize_preparation_focus_items(value: Any) -> List[InterviewPrepFocusIte
         for skill in _normalize_string_list(value)
     ]
 
+
+def _infer_industry_value(*values: Any) -> str:
+    haystack_parts: List[str] = []
+    for value in values:
+        if isinstance(value, list):
+            haystack_parts.extend(str(item).strip().lower() for item in value if str(item).strip())
+        elif value is not None:
+            text = str(value).strip().lower()
+            if text:
+                haystack_parts.append(text)
+    combined = " ".join(haystack_parts)
+    if not combined:
+        return "other"
+
+    explicit_match = re.search(
+        r"\b(tech|finance|healthcare|education|ecommerce|e-commerce|other)\b",
+        combined,
+    )
+    if explicit_match:
+        normalized = explicit_match.group(1).replace("e-commerce", "ecommerce")
+        if normalized in VALID_INDUSTRIES:
+            return normalized
+
+    scores = {industry: 0 for industry in INDUSTRY_KEYWORDS}
+    for industry, keywords in INDUSTRY_KEYWORDS.items():
+        for keyword in keywords:
+            if keyword in combined:
+                scores[industry] += 1
+
+    best_industry = max(scores, key=scores.get)
+    return best_industry if scores[best_industry] > 0 else "other"
+
 def _infer_suggested_subjects(role_title: str, key_skills: List[str], job_description: str) -> List[str]:
     haystack = " ".join([role_title or "", " ".join(key_skills or []), job_description or ""]).lower()
     inferred: List[str] = []
@@ -676,6 +723,12 @@ def _build_fallback_extract_jd_response(request: ExtractJDRequest, notes: Option
     role_title = _first_non_empty_string(request.role, "Data Analyst") or "Data Analyst"
     key_skills = _normalize_string_list(request.user_skills)
     domains = _normalize_string_list(request.company_name)
+    industry = _infer_industry_value(
+        request.industry,
+        request.company_name,
+        request.role,
+        request.job_description,
+    )
     suggested_subjects = _infer_suggested_subjects(role_title, key_skills, request.job_description)
     summary = InterviewSkillSummary(
         company=request.company_name or None,
@@ -692,6 +745,7 @@ def _build_fallback_extract_jd_response(request: ExtractJDRequest, notes: Option
         company_name=request.company_name or None,
         location=None,
         years_of_experience=None,
+        industry=industry,
         key_skills=key_skills,
         domains=domains,
         suggested_subjects=suggested_subjects,
@@ -760,6 +814,17 @@ def _normalize_extract_jd_payload(payload: dict, request: ExtractJDRequest) -> E
         or payload.get("industry")
         or request.company_name
     )
+    normalized_industry = _infer_industry_value(
+        payload.get("industry"),
+        domains,
+        payload.get("domain_focus"),
+        payload.get("company_name"),
+        payload.get("role_title"),
+        request.industry,
+        request.company_name,
+        request.role,
+        request.job_description,
+    )
 
     suggested_subjects = _normalize_string_list(payload.get("suggested_subjects"))
     if not suggested_subjects:
@@ -805,6 +870,7 @@ def _normalize_extract_jd_payload(payload: dict, request: ExtractJDRequest) -> E
         company_name=company_name,
         location=location,
         years_of_experience=years_of_experience,
+        industry=normalized_industry,
         key_skills=key_skills,
         domains=domains,
         suggested_subjects=suggested_subjects,
@@ -867,6 +933,22 @@ EXTRACTION RULES:
 - supporting_skills: Secondary technical skills
 - thinking_business_skills: Soft/business/communication skills
 - recommended_preparation_focus: Top 3-4 skills to prepare for interview with type and reason
+"""
+    prompt += """
+
+MANDATORY INDUSTRY ADDENDUM:
+- Add an "industry" key at the top level of the JSON.
+- The value must be exactly one of: tech, finance, healthcare, education, ecommerce, other.
+- Do not omit the "industry" key.
+- Infer industry from the employer's primary business model, not from a single incidental keyword.
+- Use these tie-breakers:
+  - lending, credit, NBFC, bank, underwriting, insurance, wealth management -> finance
+  - retailer, marketplace, shopping, catalog, merchant, D2C, online store -> ecommerce
+  - SaaS, software, cloud, platform, developer tools, AI product -> tech
+  - hospital, medical, clinical, pharma, diagnostics -> healthcare
+  - school, university, edtech, curriculum, learning platform -> education
+- If multiple industries appear, choose the company's core business.
+- If still unclear, return other.
 """
 
     try:
@@ -1067,6 +1149,8 @@ class DomainKPIRequest(BaseModel):
     domain: Optional[str] = None
     role_title: Optional[str] = None
     business_function: Optional[str] = None
+    detail_level: Optional[Literal["summary", "full"]] = "full"
+    target_kpi_count: Optional[int] = None
 
 class DomainKPIResponse(BaseModel):
     company_name: Optional[str] = None
@@ -1092,6 +1176,107 @@ class DomainKPIResponse(BaseModel):
     division: Optional[str] = None
     domain_snapshot: str
     kpis: List[dict]
+
+
+DOMAIN_KPI_REQUIRED_TEXT_FIELDS = [
+    "company_overview",
+    "sector_sub_sector",
+    "core_customer_segments",
+    "operations",
+    "products_services_portfolio",
+    "geographic_presence",
+    "competitors_market_positioning",
+    "trends_challenges",
+    "division",
+    "headquarters",
+    "founded_year",
+    "revenue_fy",
+    "number_of_employees",
+    "domain_snapshot",
+]
+
+DOMAIN_KPI_REQUIRED_LIST_FIELDS = [
+    "domain_keywords",
+    "business_model",
+    "value_chain",
+    "analytics_in_this_domain",
+    "top_strategic_priorities",
+]
+
+DOMAIN_KPI_PLACEHOLDER_MARKERS = [
+    "not provided",
+    "not available",
+    "not specified",
+    "unknown",
+    "n/a",
+    "to be filled",
+    "tbd",
+]
+
+
+def _contains_placeholder(value: Any) -> bool:
+    text = str(value or "").strip().lower()
+    return any(marker in text for marker in DOMAIN_KPI_PLACEHOLDER_MARKERS)
+
+
+def _clean_text(value: Any) -> str:
+    return str(value or "").strip()
+
+
+def _clean_list(value: Any) -> List[str]:
+    if isinstance(value, list):
+        cleaned = [
+            str(item).strip()
+            for item in value
+            if str(item).strip() and not _contains_placeholder(item)
+        ]
+        return cleaned
+    return []
+
+
+def _normalize_domain_kpi_payload(payload: dict) -> dict:
+    normalized = dict(payload or {})
+    for field in DOMAIN_KPI_REQUIRED_TEXT_FIELDS:
+        normalized[field] = _clean_text(normalized.get(field))
+    for field in DOMAIN_KPI_REQUIRED_LIST_FIELDS:
+        normalized[field] = _clean_list(normalized.get(field))
+    normalized["company_name"] = _clean_text(normalized.get("company_name"))
+    normalized["role_title"] = _clean_text(normalized.get("role_title"))
+    normalized["business_function"] = _clean_text(normalized.get("business_function"))
+    normalized["kpis"] = normalized.get("kpis") if isinstance(normalized.get("kpis"), list) else []
+    normalized["domain_snapshot"] = _flatten_domain_snapshot(
+        normalized.get("domain_snapshot")
+    )
+    return normalized
+
+
+def _missing_domain_kpi_fields(payload: dict, min_kpis: int = 12) -> List[str]:
+    missing = []
+    for field in DOMAIN_KPI_REQUIRED_TEXT_FIELDS:
+        value = _clean_text(payload.get(field))
+        if not value or _contains_placeholder(value):
+            missing.append(field)
+    for field in DOMAIN_KPI_REQUIRED_LIST_FIELDS:
+        values = _clean_list(payload.get(field))
+        minimum_size = 3
+        if field == "top_strategic_priorities":
+            minimum_size = 3
+        if len(values) < minimum_size:
+            missing.append(field)
+    kpis = payload.get("kpis")
+    if not isinstance(kpis, list) or len(kpis) < min_kpis:
+        missing.append("kpis")
+    return missing
+
+
+def _parse_json_response(result_text: str) -> dict:
+    try:
+        return json.loads(result_text)
+    except json.JSONDecodeError:
+        json_match = re.search(r"\{.*\}", result_text, re.DOTALL)
+        if json_match:
+            return json.loads(json_match.group())
+        raise ValueError("Could not parse AI response as JSON")
 
 def _flatten_domain_snapshot(snapshot: Any) -> str:
     if snapshot is None:
@@ -1134,7 +1319,10 @@ async def generate_domain_kpi(request: DomainKPIRequest):
     if not request.company_name:
         raise ValueError("Company name is required")
 
-    prompt = AGENT2_SYSTEM_DOMAIN_KNOWLEDGE
+    prompt = INTERVIEW_PREP_DOMAIN_KPI
+    detail_level = request.detail_level or "full"
+    target_kpi_count = request.target_kpi_count or (6 if detail_level == "summary" else 12)
+    target_kpi_count = max(3, min(int(target_kpi_count), 15))
     
     context = f"""
     Company: {request.company_name}
@@ -1162,10 +1350,10 @@ async def generate_domain_kpi(request: DomainKPIRequest):
        - Trends & Challenges
        - Analytics in this Domain
     3. STEP 3: DOMAIN KPI MASTERCLASS
-       - 12-15 KPIs with definition, formula, why it matters, and domain example
+       - {target_kpi_count} KPIs with definition, formula, why it matters, and domain example
     4. STEP 4: CLOSING FOLLOW-UP
        - Short interview-ready closing note
-   
+    
     Format the response as JSON with structure:
     {{
         "company_name": "{request.company_name}",
@@ -1173,13 +1361,23 @@ async def generate_domain_kpi(request: DomainKPIRequest):
         "business_function": "{request.business_function or ''}",
         "domain_keywords": ["...", "...", "..."],
         "company_overview": "...",
+        "sector_sub_sector": "...",
+        "business_model": ["...", "...", "..."],
+        "value_chain": ["...", "...", "..."],
+        "core_customer_segments": "...",
+        "operations": "...",
+        "products_services_portfolio": "...",
+        "geographic_presence": "...",
+        "competitors_market_positioning": "...",
+        "trends_challenges": "...",
+        "analytics_in_this_domain": ["...", "...", "..."],
         "division": "...",
         "headquarters": "...",
         "founded_year": "...",
         "revenue_fy": "...",
         "number_of_employees": "...",
         "top_strategic_priorities": ["...", "...", "..."],
-        "domain_snapshot": "Plain text only, not a nested object",
+        "domain_snapshot": "Plain text only, not a nested object. Must summarize the company, sector, business model, customers, operations, products, geography, competitors, trends, and analytics use cases.",
         "kpis": [
             {{
                 "name": "KPI name",
@@ -1188,46 +1386,87 @@ async def generate_domain_kpi(request: DomainKPIRequest):
                 "why_matters": "Business implications",
                 "example": "Concrete scenario in this company"
             }},
-            ...
+            ... 
         ]
     }}
+
+    Important:
+    - Every key above is mandatory.
+    - Do not use placeholder values like "not provided", "unknown", "n/a", or "to be filled".
+    - If exact facts are uncertain, provide the best interview-safe approximation and label it as approximate.
+    - Ensure business_model, value_chain, analytics_in_this_domain, and top_strategic_priorities are populated.
+    - Ensure kpis contains exactly {target_kpi_count} entries.
+    - Detail level for this request is "{detail_level}".
+    - If detail level is "summary", keep the prose tighter while still filling every field.
     """
 
     try:
         print("[/interview/domain-kpi] Calling OpenAI API...")
         response = client.chat.completions.create(
-            model="gpt-4",
+            model=os.getenv("DOMAIN_KPI_MODEL", "gpt-5.4"),
             messages=[
                 {"role": "system", "content": prompt},
                 {"role": "user", "content": context}
             ],
-            temperature=0.3
+            temperature=0.2
         )
 
         result_text = response.choices[0].message.content.strip()
         print("[/interview/domain-kpi] OpenAI response received")
 
         try:
-            import json
-            result = json.loads(result_text)
-            print("[/interview/domain-kpi] Successfully parsed JSON response")
-            result["domain_snapshot"] = _flatten_domain_snapshot(
-                result.get("domain_snapshot")
-            )
-            return DomainKPIResponse(**result)
-        except json.JSONDecodeError as parse_error:
-            print(f"[/interview/domain-kpi] JSON parse error: {parse_error}")
-            import re
-            json_match = re.search(r'\{.*\}', result_text, re.DOTALL)
-            if json_match:
-                print("[/interview/domain-kpi] Extracted JSON from response using regex")
-                result = json.loads(json_match.group())
-                result["domain_snapshot"] = _flatten_domain_snapshot(
-                    result.get("domain_snapshot")
+            result = _normalize_domain_kpi_payload(_parse_json_response(result_text))
+            missing_fields = _missing_domain_kpi_fields(result, min_kpis=target_kpi_count)
+            if missing_fields:
+                print(
+                    f"[/interview/domain-kpi] Missing required fields after first pass: {missing_fields}"
                 )
-                return DomainKPIResponse(**result)
-            else:
-                raise ValueError("Could not parse AI response as JSON")
+                repair_prompt = f"""
+You are repairing an incomplete Domain Knowledge JSON response.
+Return valid JSON only.
+Preserve all good existing values.
+Fill the missing or weak fields listed below with concrete interview-ready content.
+Do not use placeholders like "not provided", "unknown", "n/a", or "to be filled".
+If exact company facts are uncertain, provide the best interview-safe approximation and label it as approximate.
+
+Missing fields:
+{json.dumps(missing_fields)}
+
+Current JSON:
+{json.dumps(result, ensure_ascii=False)}
+"""
+                repair_response = client.chat.completions.create(
+                    model=os.getenv("DOMAIN_KPI_MODEL", "gpt-5.4"),
+                    messages=[
+                        {"role": "system", "content": prompt},
+                        {"role": "user", "content": context},
+                        {"role": "assistant", "content": json.dumps(result, ensure_ascii=False)},
+                        {"role": "user", "content": repair_prompt},
+                    ],
+                    temperature=0.2,
+                )
+                repaired_text = repair_response.choices[0].message.content.strip()
+                repaired_result = _normalize_domain_kpi_payload(
+                    _parse_json_response(repaired_text)
+                )
+                repaired_missing_fields = _missing_domain_kpi_fields(
+                    repaired_result,
+                    min_kpis=target_kpi_count,
+                )
+                if not repaired_missing_fields:
+                    result = repaired_result
+                else:
+                    print(
+                        f"[/interview/domain-kpi] Still incomplete after repair: {repaired_missing_fields}"
+                    )
+                    for field in repaired_result:
+                        if repaired_result.get(field):
+                            result[field] = repaired_result[field]
+            print("[/interview/domain-kpi] Successfully parsed JSON response")
+            return DomainKPIResponse(**result)
+        except Exception as parse_error:
+            print(f"[/interview/domain-kpi] JSON parse/validation error: {parse_error}")
+            raise
 
     except Exception as e:
         print(f"[/interview/domain-kpi] Error: {type(e).__name__}: {e}")

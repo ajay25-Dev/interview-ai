@@ -1419,7 +1419,13 @@ Required output structure:
   "competitors_market_positioning": "Competitor positioning paragraph",
   "trends_challenges": "Trends and challenges paragraph",
   "analytics_in_this_domain": ["bullet 1", "bullet 2", "bullet 3"],
+  "division": "Division or business unit",
+  "headquarters": "HQ city and country",
+  "founded_year": "Founded year or approximate year",
+  "revenue_fy": "Latest fiscal year revenue",
+  "number_of_employees": "Approximate employee count",
   "top_strategic_priorities": ["Priority 1", "Priority 2", "Priority 3"],
+  "domain_snapshot": "Plain text summary that combines the company and domain snapshot",
   "kpis": [
     {
       "name": "KPI name",
@@ -1438,6 +1444,13 @@ Formatting rules:
   - STEP 2: COMPANY + DOMAIN SNAPSHOT (Detailed)
   - STEP 3: DOMAIN KPI MASTERCLASS
   - STEP 4: CLOSING FOLLOW-UP
+- Every field above is mandatory. Do not omit keys.
+- Do not return null, empty string, empty array, or placeholder text like "not provided", "unknown", "n/a", "not available", or "to be filled".
+- If exact company facts are uncertain, provide the best interview-safe approximation and state that it is approximate in the value itself.
+- "business_model", "value_chain", and "analytics_in_this_domain" must each contain at least 3 concrete bullets.
+- "top_strategic_priorities" must contain exactly 3 concrete priorities.
+- "kpis" must contain 12 to 15 KPI objects.
+- "domain_snapshot" must be a non-empty plain-text summary and must not be a nested object.
 - Provide 12 to 15 KPIs.
 - Use exactly 3 top strategic priorities.
 - Return only valid JSON.
