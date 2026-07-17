@@ -1,5 +1,5 @@
 # orchestrator.py
-import os, json, tempfile, re, io, csv, textwrap
+import os, json, tempfile, re, io, csv, textwrap, time
 from pathlib import Path
 from typing import Dict, Any, Optional, List
 # from agents import build_agent1, build_agent2
@@ -276,6 +276,113 @@ Solution Coding Language: {solution_coding_language}
     ).content
 
 
+def _extract_answer_blocks_only(answer_text: str, marker_style: str = "#") -> Dict[str, str]:
+    txt = str(answer_text or "").replace("\ufeff", "").replace("\u200b", "").strip()
+    if not txt:
+        return {}
+
+    escaped_marker = re.escape(marker_style)
+    answer_pattern = re.compile(
+        rf"(?=^{escaped_marker}\s*@ANSWER_Q\d+\s*$)",
+        flags=re.MULTILINE,
+    )
+    blocks = re.split(answer_pattern, txt)
+    answers: Dict[str, str] = {}
+    for block in blocks:
+        if not block.strip():
+            continue
+        header_line = block.strip().splitlines()[0]
+        header_match = re.match(
+            rf"^{escaped_marker}\s*@ANSWER_Q(\d+)\s*$",
+            header_line,
+            flags=re.MULTILINE,
+        )
+        if not header_match:
+            continue
+        question_number = header_match.group(1)
+        body = "\n".join(block.strip().splitlines()[1:]).strip()
+        if body:
+            answers[question_number] = body
+    return answers
+
+
+def _repair_missing_answer_blocks(
+    subject: str,
+    solution_coding_language: str,
+    case_study_text: str,
+    questions_block: str,
+    missing_question_numbers: List[int],
+    existing_answers: Dict[str, str],
+    marker_style_override: Optional[str] = None,
+) -> Dict[str, str]:
+    fixer = ChatOpenAI(model="gpt-4o-mini", temperature=0)
+    subject_lower = subject.lower().strip()
+    marker_style = "#" if subject_lower in {"python"} else "--"
+    if subject_lower in {"statistics", "excel", "google_sheets", "google sheets", "sheets"}:
+        marker_style = "//"
+    if marker_style_override in {"#", "//", "--"}:
+        marker_style = marker_style_override
+
+    answered_summary = "\n".join(
+        f"Q{question_number}: present"
+        for question_number in sorted(
+            int(key) for key, value in existing_answers.items() if str(value or "").strip()
+        )
+    ) or "None"
+    missing_list = ", ".join(str(number) for number in missing_question_numbers)
+
+    repair_prompt = ChatPromptTemplate.from_messages([
+        (
+            "system",
+            f"""You are repairing only missing answer blocks for {subject}.
+
+Return ONLY the missing answer blocks, nothing else.
+Do NOT return dataset creation blocks.
+Do NOT repeat existing answers.
+Each answer block must start exactly with `{marker_style} @ANSWER_Qn` on its own line.
+Return blocks only for these question numbers: {missing_list}.
+Every requested question number must appear exactly once.
+""",
+        ),
+        (
+            "user",
+            """Case Study:
+{case_study_text}
+
+Questions:
+{questions_block}
+
+Solution Coding Language: {solution_coding_language}
+
+Existing answers already present:
+{answered_summary}
+
+Missing question numbers:
+{missing_list}
+""",
+        ),
+    ])
+
+    response = (
+        repair_prompt
+        | fixer
+    ).invoke(
+        {
+            "case_study_text": case_study_text,
+            "questions_block": questions_block,
+            "solution_coding_language": solution_coding_language,
+            "answered_summary": answered_summary,
+            "missing_list": missing_list,
+        }
+    ).content
+
+    repaired_answers = _extract_answer_blocks_only(response, marker_style=marker_style)
+    return {
+        str(question_number): repaired_answers.get(str(question_number), "").strip()
+        for question_number in missing_question_numbers
+    }
+
+
 # Shared helpers
 def _format_future_topics_for_prompt(value: Optional[Any]) -> str:
     """
@@ -351,13 +458,23 @@ def _should_use_interview_question_prompt(subject: Any) -> bool:
     subject_lower = str(subject or "").strip().lower()
     return subject_lower in {
         "sql",
-        "python",
-        "statistics",
+        "excel",
+        "google_sheets",
+        "google sheets",
+        "sheets",
         "product analytics",
         "product_analytics",
         "case study",
         "case_study",
     }
+
+
+def _log_stage_timing(subject: Any, stage: str, started_at: float) -> None:
+    elapsed_ms = round((time.perf_counter() - started_at) * 1000)
+    normalized_subject = str(subject or "").strip() or "unknown"
+    print(
+        f'[timing] ai.orchestrate stage={stage} subject="{normalized_subject}" duration_ms={elapsed_ms}'
+    )
 
 
 def _extract_markdown_values(markdown_table: Any) -> List[str]:
@@ -1195,7 +1312,10 @@ def generate_interview_questions(params: dict) -> str:
     prompt_params["domain"] = prompt_params.get("domain") or "generic"
     prompt_params["total_questions"] = prompt_params.get("total_questions") or 8
 
-    llm, prompt = get_agent1_interviewq_llm_and_prompt()
+    llm, prompt = get_agent1_interviewq_llm_and_prompt(
+        subject=prompt_params["subject"],
+        total_questions=prompt_params["total_questions"],
+    )
     messages = prompt.format_messages(**prompt_params)
     resp = llm.invoke(messages)
     return resp.content
@@ -1241,7 +1361,10 @@ def generate_code(
     #     "[orchestrator] Agent2 payload => "
     #     f"subject={subject!r}, dataset_language={resolved_dataset_language!r}, solution_language={resolved_solution_language!r}"
     # )
-    llm, prompt = get_agent2_llm_and_prompt(subject=agent2_subject)
+    llm, prompt = get_agent2_llm_and_prompt(
+        subject=agent2_subject,
+        total_questions=total_questions,
+    )
     messages = prompt.format_messages(
         subject=subject,
         coding_language=resolved_solution_language,
@@ -1290,6 +1413,7 @@ def orchestrate(
     future_topics: Optional[Any] = None,
     previous_questions_context: Optional[Any] = None,
 ):
+    orchestrate_started_at = time.perf_counter()
     normalized_field = field.strip().lower() if isinstance(field, str) else ""
     resolved_dataset_language = (
         dataset_creation_coding_language.strip()
@@ -1318,6 +1442,7 @@ def orchestrate(
     total_questions_value = int(total_questions) if isinstance(total_questions, int) else 8
 
     if use_interview_question_prompt:
+        agent1_started_at = time.perf_counter()
         candidate_experience = _map_learner_level_to_candidate_experience(
             learner_level
         )
@@ -1330,6 +1455,7 @@ def orchestrate(
             "total_questions": total_questions_value,
         })
         interview_question_pack = _parse_json_response_text(interview_question_text)
+        _log_stage_timing(subject, "agent1_interview_questions", agent1_started_at)
         case_block, questions_raw, normalized_questions = _build_interview_pack_case_text(
             interview_question_pack,
             subject=subject,
@@ -1350,6 +1476,7 @@ def orchestrate(
         data_dictionary = header_parsed["data_dictionary"]
     else:
         # 1) Agent 1 → case study
+        agent1_started_at = time.perf_counter()
         agent1_out = generate_case_study({
             "field": field,
             "domain": domain,
@@ -1364,15 +1491,18 @@ def orchestrate(
         })
 
         print("Agent 1 output:\n", agent1_out)
+        _log_stage_timing(subject, "agent1_case_study", agent1_started_at)
 
         # Try parse; on failure, one repair attempt
         try:
             case_block = extract_case_study_block(agent1_out)
             # print(case_block)
         except ValueError:
+            repair_started_at = time.perf_counter()
             repaired = _repair_case_output(agent1_out)
             case_block = extract_case_study_block(repaired)  # may raise again
             agent1_out = repaired
+            _log_stage_timing(subject, "agent1_repair", repair_started_at)
 
         split = split_questions_from_case(case_block)
         header_text_raw = split["header"]
@@ -1391,6 +1521,7 @@ def orchestrate(
     # Parse questions will be done after answers are available
 
     # 2) Agent 2 → code blocks (strict tags only)
+    agent2_started_at = time.perf_counter()
     agent2_out = generate_code(
         subject,
         resolved_dataset_language,
@@ -1401,6 +1532,7 @@ def orchestrate(
         future_topics=future_topics,
         previous_questions_context=previous_questions_context,
     )
+    _log_stage_timing(subject, "agent2_generate_code", agent2_started_at)
     # Pass subject to parser for subject-aware parsing
     parser_subject = "non_coding" if is_non_coding else subject
     parser_subject_lower = parser_subject.lower().strip()
@@ -1408,6 +1540,7 @@ def orchestrate(
         parsed2 = extract_agent2_blocks(agent2_out, subject=parser_subject)
     except ValueError as parse_error:
         if parser_subject_lower in {"excel", "google_sheets", "google sheets", "sheets", "python"}:
+            repair_started_at = time.perf_counter()
             repaired_agent2_out = _repair_agent2_output(
                 subject=subject,
                 dataset_creation_coding_language=resolved_dataset_language,
@@ -1418,6 +1551,7 @@ def orchestrate(
             )
             parsed2 = extract_agent2_blocks(repaired_agent2_out, subject=parser_subject)
             agent2_out = repaired_agent2_out
+            _log_stage_timing(subject, "agent2_repair_parse", repair_started_at)
         else:
             raise parse_error
     agent2_sql_creation = parsed2.get("data_creation_sql")
@@ -1482,20 +1616,35 @@ def orchestrate(
             if not str(answers_sql_map.get(str(question["id"])) or "").strip()
         ]
         if missing_answer_ids:
-            repaired_agent2_out = _repair_agent2_output(
-                subject=subject,
-                dataset_creation_coding_language=resolved_dataset_language,
-                solution_coding_language=resolved_solution_language,
-                case_study_text=case_block,
-                questions_block=questions_raw,
-                previous_raw=agent2_out,
-                missing_question_numbers=missing_answer_ids,
-            )
-            parsed_repair = extract_agent2_blocks(
-                repaired_agent2_out,
-                subject=parser_subject,
-            )
-            repaired_answers_sql_map = parsed_repair["answers"]
+            repair_started_at = time.perf_counter()
+            if parser_subject_lower in {"python", "statistics", "excel", "google_sheets", "google sheets", "sheets"}:
+                marker_style_override = "#" if parser_subject_lower == "python" else "//"
+                if parser_subject_lower == "statistics" and not agent2_sheets_creation:
+                    marker_style_override = "#"
+                repaired_answers_sql_map = _repair_missing_answer_blocks(
+                    subject=subject,
+                    solution_coding_language=resolved_solution_language,
+                    case_study_text=case_block,
+                    questions_block=questions_raw,
+                    missing_question_numbers=missing_answer_ids,
+                    existing_answers=answers_sql_map,
+                    marker_style_override=marker_style_override,
+                )
+            else:
+                repaired_agent2_out = _repair_agent2_output(
+                    subject=subject,
+                    dataset_creation_coding_language=resolved_dataset_language,
+                    solution_coding_language=resolved_solution_language,
+                    case_study_text=case_block,
+                    questions_block=questions_raw,
+                    previous_raw=agent2_out,
+                    missing_question_numbers=missing_answer_ids,
+                )
+                parsed_repair = extract_agent2_blocks(
+                    repaired_agent2_out,
+                    subject=parser_subject,
+                )
+                repaired_answers_sql_map = parsed_repair["answers"]
             still_missing = [
                 q_id
                 for q_id in missing_answer_ids
@@ -1505,11 +1654,21 @@ def orchestrate(
                 raise ValueError(
                     f"Missing answer block(s) after repair for question(s): {', '.join(map(str, still_missing))}"
                 )
-            parsed2 = parsed_repair
-            agent2_out = repaired_agent2_out
-            answers_sql_map = repaired_answers_sql_map
+            if parser_subject_lower not in {"python", "statistics", "excel", "google_sheets", "google sheets", "sheets"}:
+                parsed2 = parsed_repair
+                agent2_out = repaired_agent2_out
+                answers_sql_map = repaired_answers_sql_map
+            else:
+                answers_sql_map = {
+                    **answers_sql_map,
+                    **{
+                        str(question_id): repaired_answers_sql_map.get(str(question_id), "")
+                        for question_id in missing_answer_ids
+                    },
+                }
             if not is_non_coding:
                 questions_raw_list = parse_questions_raw(questions_raw, answers_sql_map)
+            _log_stage_timing(subject, "agent2_repair_missing_answers", repair_started_at)
 
     # Non-coding branch: keep questions + answers, skip all dataset creation/parsing/validation.
     if is_non_coding:
@@ -1530,10 +1689,12 @@ def orchestrate(
         domain_knowledge_text = parsed2.get("domain_knowledge_text")
         if domain_knowledge_text:
             result["domain_knowledge_text"] = domain_knowledge_text
+        _log_stage_timing(subject, "total", orchestrate_started_at)
         return result
 
     subject_lower = subject.strip().lower()
     coding_language_lower = resolved_solution_language.lower()
+    postprocess_started_at = time.perf_counter()
     is_python_like = coding_language_lower in {"python", "statistics"} or subject_lower in {"python", "statistics"}
     is_google_like = subject_lower in {"excel", "google_sheets", "google sheets", "sheets"} or coding_language_lower in {"excel", "google_sheets", "google sheets", "sheets", "excel formula"}
 
@@ -1661,6 +1822,7 @@ def orchestrate(
         result["dataset_rows"] = dataset_rows
     if dataset_table_name is not None:
         result["dataset_table_name"] = dataset_table_name
+    _log_stage_timing(subject, "postprocess", postprocess_started_at)
 
     # 3) Optional local verification (SQLite)
     # Verify for SQL, Statistics, and Python exercises that have generated SQL
@@ -1714,6 +1876,7 @@ def orchestrate(
         except Exception as e:
             result["verification_error"] = str(e)
 
+    _log_stage_timing(subject, "total", orchestrate_started_at)
     return result
 
 

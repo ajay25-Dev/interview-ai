@@ -358,7 +358,7 @@ You do NOT evaluate.
 You ONLY generate questions.
 
 INPUT PARAMETERS:
-- subject: (SQL / Python / Statistics / Product Analytics / Case Study)
+- subject: (SQL / Excel / Google Sheets / Python / Statistics / Product Analytics / Case Study)
 - candidate_experience: (0-1 / 1-2 / 3+ years)
 - company_name: (optional string)
 - role: (optional string, e.g., Data Analyst / Business Analyst / Product Analyst)
@@ -450,6 +450,12 @@ For each table:
 - Exactly 2 rows per table
 - Include data types in header
 - Include at least one edge case: NULL, duplicate, or boundary value
+
+EXCEL / GOOGLE SHEETS RULES:
+- Questions must sound like spreadsheet/business analysis tasks, not SQL tasks.
+- Do not mention SQL, joins, window functions, or query syntax in the question wording.
+- Prefer questions about formulas, pivots, lookup logic, summaries, charts, and spreadsheet-based analysis.
+- Keep the problem statement tool-agnostic enough that Agent 2 can answer in spreadsheet steps/formulas.
 
 OUTPUT STRUCTURE (MARKDOWN):
 Provide output_columns_markdown in markdown table format.

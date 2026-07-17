@@ -1,3 +1,4 @@
+import os
 from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate
 from prompts import (
@@ -52,17 +53,43 @@ def get_agent1_llm_and_prompt(
     return llm, prompt
 
 def get_agent1_interviewq_llm_and_prompt(
-    model: str = "gpt-5-mini",
+    model: str = "",
     temperature: float = 1,
+    subject: str = "SQL",
+    total_questions: int = 8,
 ):
-    llm = ChatOpenAI(model=model, reasoning={"effort": "low"})
+    resolved_model = model or os.getenv("INTERVIEWQ_AGENT1_MODEL", "gpt-4o-mini")
+    llm = ChatOpenAI(model=resolved_model, temperature=temperature)
+    normalized_subject = subject.strip().lower() if isinstance(subject, str) else ""
+    resolved_total_questions = (
+        int(total_questions)
+        if isinstance(total_questions, int) and total_questions > 0
+        else 8
+    )
+    system_prompt = AGENT1_INTERVIEWQ
+    if resolved_total_questions <= 8 and normalized_subject in {"sql", "excel", "google_sheets", "google sheets", "sheets"}:
+        system_prompt += """
+
+FAST MODE ADDENDUM:
+- Keep titles short.
+- Keep business_context to 1-2 sentences.
+- Keep problem_statement concise and interview-style.
+- Keep sample_data_markdown compact with only the minimum rows needed.
+- Use only one populated sample table unless a second table is strictly necessary.
+- Keep expected_skills short or empty unless essential.
+- Keep output concise while still valid."""
     prompt = ChatPromptTemplate.from_messages([
-        ("system", AGENT1_INTERVIEWQ),
+        ("system", system_prompt),
         ("user", AGENT1_INTERVIEWQ_USER_TEMPLATE),
     ])
     return llm, prompt
 
-def get_agent2_llm_and_prompt(model: str = "gpt-4o-mini", temperature: float = 1, subject: str = "SQL"):
+def get_agent2_llm_and_prompt(
+    model: str = "gpt-4o-mini",
+    temperature: float = 1,
+    subject: str = "SQL",
+    total_questions: int = 8,
+):
     """
     Get Agent2 LLM and prompt with subject-aware system prompt.
     Defaults to SQL for backward compatibility.
@@ -70,6 +97,22 @@ def get_agent2_llm_and_prompt(model: str = "gpt-4o-mini", temperature: float = 1
     llm = ChatOpenAI(model=model, temperature=temperature)
     # Get subject-specific system prompt
     system_prompt = get_agent2_system_prompt(subject)
+    normalized_subject = subject.strip().lower() if isinstance(subject, str) else ""
+    resolved_total_questions = (
+        int(total_questions)
+        if isinstance(total_questions, int) and total_questions > 0
+        else 8
+    )
+    if resolved_total_questions <= 8 and normalized_subject in {"sql", "excel", "google_sheets", "google sheets", "sheets"}:
+        system_prompt += """
+
+FAST MODE ADDENDUM:
+- Generate the smallest valid dataset that still supports every question.
+- Prefer roughly 12-20 seeded rows total unless more are strictly required.
+- Keep each answer concise and direct.
+- Avoid unnecessary extra tables when one table is sufficient.
+- Reuse the same compact dataset across questions whenever possible.
+- Favor the simplest valid solution that matches the expected output columns."""
     prompt = ChatPromptTemplate.from_messages([
         ("system", system_prompt),
         ("user", AGENT2_USER_TEMPLATE),
