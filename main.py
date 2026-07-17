@@ -19,6 +19,7 @@ from prompts import (
 )
 import json
 import re
+import time
 
 load_dotenv()
 
@@ -26,6 +27,7 @@ os.environ["OPENAI_API_KEY"] = os.getenv('OPENAI_API_KEY')
 client = OpenAI()
 JD_EXTRACTION_MODEL = os.getenv("JD_EXTRACTION_MODEL", "gpt-5.4")
 TOPIC_HIERARCHY_MODEL = os.getenv("TOPIC_HIERARCHY_MODEL", "gpt-5.4")
+INTERVIEW_PLAN_MODEL = os.getenv("INTERVIEW_PLAN_MODEL", "gpt-5.4")
 
 app = FastAPI()
 
@@ -450,75 +452,101 @@ async def generate_interview_plan(request: GeneratePlanRequest):
         """
 
     prompt = f"""
-    Based on the following job description and interview profile, create a comprehensive interview preparation plan.
+    Create a concise interview preparation plan from this profile and JD.
 
     {profile_info}
 
     Job Description:
     {request.job_description}
 
-    Create a structured interview preparation plan in the following JSON format:
+    Return valid JSON with exactly this shape:
     {{
-        "domains": [
+      "domains": [
+        {{
+          "title": "Domain name",
+          "description": "Why this domain matters for the role",
+          "core_topics": ["topic1", "topic2", "topic3"],
+          "kpis": [
             {{
-                "title": "Domain name (e.g., Technical Skills, System Design, etc.)",
-                "description": "Detailed description of this domain and why it's important for the role",
-                "core_topics": ["topic1", "topic2", "topic3"],
-                "kpis": [
-                    {{
-                        "name": "KPI Name",
-                        "description": "What this KPI measures and why it matters",
-                        "importance": "high|medium|low"
-                    }}
-                ]
+              "name": "KPI name",
+              "description": "What it measures and why it matters",
+              "importance": "high"
             }}
-        ],
-        "case_studies": [
-            {{
-                "title": "Case Study Title",
-                "business_problem": "The business problem to solve",
-                "solution_outline": "Detailed outline of the solution approach",
-                "key_learnings": ["Learning 1", "Learning 2", "Learning 3"]
-            }}
-        ],
-        "summary": "Brief summary of the preparation plan",
-        "estimated_hours": 50
+          ]
+        }}
+      ],
+      "case_studies": [
+        {{
+          "title": "Case study title",
+          "business_problem": "Problem to solve",
+          "solution_outline": "Short solution outline",
+          "key_learnings": ["learning1", "learning2"]
+        }}
+      ],
+      "summary": "2-3 sentence summary",
+      "estimated_hours": 40
     }}
 
-    Focus on the most relevant areas for this specific job and candidate profile. Each domain should have 2-3 KPIs and 3-5 core topics. Include 2-3 realistic case studies relevant to the role.
+    Constraints:
+    - 3 to 4 domains only
+    - 3 core_topics per domain
+    - 2 KPIs per domain
+    - 1 to 2 case studies only
+    - Keep descriptions compact and interview-focused
     """
 
     try:
-        print("[/interview/generate-plan] Calling OpenAI API with gpt-4 model...")
-        response = client.chat.completions.create(
-            model="gpt-4",
-            messages=[
-                {"role": "system", "content": "You are an interview preparation expert. Create structured, actionable preparation plans."},
-                {"role": "user", "content": prompt}
-            ],
-            temperature=0.3
-        )
+        attempt_configs = [
+            {
+                "label": f"{INTERVIEW_PLAN_MODEL} json-mode",
+                "kwargs": {
+                    "model": INTERVIEW_PLAN_MODEL,
+                    "messages": [
+                        {"role": "system", "content": "You are an interview preparation expert. Create structured, actionable preparation plans. Return ONLY valid JSON, no other text."},
+                        {"role": "user", "content": prompt}
+                    ],
+                    "max_completion_tokens": 1400,
+                    "response_format": {"type": "json_object"},
+                },
+            },
+            {
+                "label": f"{INTERVIEW_PLAN_MODEL} text-fallback",
+                "kwargs": {
+                    "model": INTERVIEW_PLAN_MODEL,
+                    "messages": [
+                        {"role": "system", "content": "You are an interview preparation expert. Create structured, actionable preparation plans. Return ONLY valid JSON, no other text."},
+                        {"role": "user", "content": prompt}
+                    ],
+                    "temperature": 0.3,
+                },
+            },
+        ]
 
-        result_text = response.choices[0].message.content.strip()
-        print("[/interview/generate-plan] OpenAI response:", result_text)
+        last_error = None
+        for attempt in attempt_configs:
+            try:
+                print(f"[/interview/generate-plan] Calling OpenAI API with {attempt['label']}...")
+                response = client.chat.completions.create(**attempt["kwargs"])
+                result_text = (response.choices[0].message.content or "").strip()
+                print("[/interview/generate-plan] OpenAI response:", result_text)
 
-        # Try to parse the JSON response
-        try:
-            import json
-            result = json.loads(result_text)
-            print("[/interview/generate-plan] Successfully parsed JSON response")
-            return GeneratePlanResponse(**result)
-        except json.JSONDecodeError as parse_error:
-            print(f"[/interview/generate-plan] JSON parse error: {parse_error}")
-            # Fallback: try to extract JSON from the response
-            import re
-            json_match = re.search(r'\{.*\}', result_text, re.DOTALL)
-            if json_match:
-                print("[/interview/generate-plan] Extracted JSON from response using regex")
-                result = json.loads(json_match.group())
-                return GeneratePlanResponse(**result)
-            else:
-                raise ValueError("Could not parse AI response as JSON")
+                try:
+                    result = json.loads(result_text)
+                    print("[/interview/generate-plan] Successfully parsed JSON response")
+                    return GeneratePlanResponse(**result)
+                except json.JSONDecodeError as parse_error:
+                    print(f"[/interview/generate-plan] JSON parse error: {parse_error}")
+                    json_match = re.search(r'\{.*\}', result_text, re.DOTALL)
+                    if json_match:
+                        print("[/interview/generate-plan] Extracted JSON from response using regex")
+                        result = json.loads(json_match.group())
+                        return GeneratePlanResponse(**result)
+                    raise ValueError("Could not parse AI response as JSON")
+            except Exception as attempt_error:
+                last_error = attempt_error
+                print(f"[/interview/generate-plan] Attempt failed for {attempt['label']}: {type(attempt_error).__name__}: {attempt_error}")
+
+        raise last_error if last_error else RuntimeError("Plan generation failed without a specific error")
 
     except Exception as e:
         print(f"[/interview/generate-plan] Error: {type(e).__name__}: {e}")
@@ -1270,13 +1298,40 @@ def _missing_domain_kpi_fields(payload: dict, min_kpis: int = 12) -> List[str]:
 
 
 def _parse_json_response(result_text: str) -> dict:
+    cleaned = str(result_text or "").strip()
+    if cleaned.startswith("```"):
+        cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned, flags=re.IGNORECASE)
+        cleaned = re.sub(r"\s*```$", "", cleaned)
     try:
-        return json.loads(result_text)
+        return json.loads(cleaned)
     except json.JSONDecodeError:
-        json_match = re.search(r"\{.*\}", result_text, re.DOTALL)
+        json_match = re.search(r"\{.*\}", cleaned, re.DOTALL)
         if json_match:
             return json.loads(json_match.group())
         raise ValueError("Could not parse AI response as JSON")
+
+
+def _repair_json_response(raw_text: str, model: str, label: str) -> dict:
+    repair_response = client.chat.completions.create(
+        model=model,
+        messages=[
+            {
+                "role": "system",
+                "content": (
+                    "You repair malformed JSON. Return ONLY valid JSON. "
+                    "Preserve the original meaning and fields as much as possible."
+                ),
+            },
+            {
+                "role": "user",
+                "content": f"Repair this malformed JSON for {label}:\n\n{raw_text}",
+            },
+        ],
+        max_completion_tokens=3500,
+        response_format={"type": "json_object"},
+    )
+    repaired_text = (repair_response.choices[0].message.content or "").strip()
+    return _parse_json_response(repaired_text)
 
 def _flatten_domain_snapshot(snapshot: Any) -> str:
     if snapshot is None:
@@ -1315,6 +1370,7 @@ def _flatten_domain_snapshot(snapshot: Any) -> str:
 @app.post("/interview/domain-kpi", response_model=DomainKPIResponse)
 async def generate_domain_kpi(request: DomainKPIRequest):
     print("[/interview/domain-kpi] incoming request")
+    started_at = time.perf_counter()
     
     if not request.company_name:
         raise ValueError("Company name is required")
@@ -1402,20 +1458,75 @@ async def generate_domain_kpi(request: DomainKPIRequest):
 
     try:
         print("[/interview/domain-kpi] Calling OpenAI API...")
-        response = client.chat.completions.create(
-            model=os.getenv("DOMAIN_KPI_MODEL", "gpt-5.4"),
-            messages=[
-                {"role": "system", "content": prompt},
-                {"role": "user", "content": context}
-            ],
-            temperature=0.2
+        domain_kpi_model = os.getenv(
+            "DOMAIN_KPI_SUMMARY_MODEL" if detail_level == "summary" else "DOMAIN_KPI_MODEL",
+            "gpt-5.4",
         )
+        attempt_configs = [
+            {
+                "label": f"{domain_kpi_model} json-mode",
+                "kwargs": {
+                    "model": domain_kpi_model,
+                    "messages": [
+                        {"role": "system", "content": f"{prompt}\nReturn ONLY valid JSON, no other text."},
+                        {"role": "user", "content": context}
+                    ],
+                    "max_completion_tokens": 2200 if detail_level == "summary" else 3200,
+                    "response_format": {"type": "json_object"},
+                },
+            },
+            {
+                "label": f"{domain_kpi_model} text-fallback",
+                "kwargs": {
+                    "model": domain_kpi_model,
+                    "messages": [
+                        {"role": "system", "content": f"{prompt}\nReturn ONLY valid JSON, no other text."},
+                        {"role": "user", "content": context}
+                    ],
+                    "temperature": 0.2,
+                },
+            },
+        ]
 
-        result_text = response.choices[0].message.content.strip()
-        print("[/interview/domain-kpi] OpenAI response received")
+        result_text = None
+        last_error = None
+        for attempt in attempt_configs:
+            try:
+                attempt_started_at = time.perf_counter()
+                print(f"[/interview/domain-kpi] Calling OpenAI API with {attempt['label']}...")
+                response = client.chat.completions.create(**attempt["kwargs"])
+                result_text = (response.choices[0].message.content or "").strip()
+                print("[/interview/domain-kpi] OpenAI response received")
+                print(
+                    f'[timing] domain-kpi.llm detail="{detail_level}" attempt="{attempt["label"]}" duration_ms={round((time.perf_counter() - attempt_started_at) * 1000)}'
+                )
+                break
+            except Exception as attempt_error:
+                last_error = attempt_error
+                print(f"[/interview/domain-kpi] Attempt failed for {attempt['label']}: {type(attempt_error).__name__}: {attempt_error}")
+
+        if not result_text:
+            raise last_error if last_error else RuntimeError("Domain knowledge generation failed without a specific error")
 
         try:
-            result = _normalize_domain_kpi_payload(_parse_json_response(result_text))
+            parse_started_at = time.perf_counter()
+            try:
+                parsed_payload = _parse_json_response(result_text)
+            except Exception as parse_error:
+                print(f"[/interview/domain-kpi] Initial JSON parse failed: {parse_error}")
+                repair_started_at = time.perf_counter()
+                parsed_payload = _repair_json_response(
+                    result_text,
+                    domain_kpi_model,
+                    f"domain-kpi/{detail_level}",
+                )
+                print(
+                    f'[timing] domain-kpi.repair-json detail="{detail_level}" duration_ms={round((time.perf_counter() - repair_started_at) * 1000)}'
+                )
+            result = _normalize_domain_kpi_payload(parsed_payload)
+            print(
+                f'[timing] domain-kpi.parse detail="{detail_level}" duration_ms={round((time.perf_counter() - parse_started_at) * 1000)}'
+            )
             missing_fields = _missing_domain_kpi_fields(result, min_kpis=target_kpi_count)
             if missing_fields:
                 print(
@@ -1436,7 +1547,7 @@ Current JSON:
 {json.dumps(result, ensure_ascii=False)}
 """
                 repair_response = client.chat.completions.create(
-                    model=os.getenv("DOMAIN_KPI_MODEL", "gpt-5.4"),
+                    model=domain_kpi_model,
                     messages=[
                         {"role": "system", "content": prompt},
                         {"role": "user", "content": context},
@@ -1444,6 +1555,7 @@ Current JSON:
                         {"role": "user", "content": repair_prompt},
                     ],
                     temperature=0.2,
+                    response_format={"type": "json_object"},
                 )
                 repaired_text = repair_response.choices[0].message.content.strip()
                 repaired_result = _normalize_domain_kpi_payload(
@@ -1463,6 +1575,9 @@ Current JSON:
                         if repaired_result.get(field):
                             result[field] = repaired_result[field]
             print("[/interview/domain-kpi] Successfully parsed JSON response")
+            print(
+                f'[timing] domain-kpi.total detail="{detail_level}" status=ok duration_ms={round((time.perf_counter() - started_at) * 1000)}'
+            )
             return DomainKPIResponse(**result)
         except Exception as parse_error:
             print(f"[/interview/domain-kpi] JSON parse/validation error: {parse_error}")
@@ -1470,6 +1585,9 @@ Current JSON:
 
     except Exception as e:
         print(f"[/interview/domain-kpi] Error: {type(e).__name__}: {e}")
+        print(
+            f'[timing] domain-kpi.total detail="{detail_level}" status=error duration_ms={round((time.perf_counter() - started_at) * 1000)}'
+        )
         raise
 
 class CaseStudyQuestion(BaseModel):
@@ -1598,6 +1716,7 @@ Respond ONLY with valid JSON (no markdown, no comments, no extra text):
 @app.post("/interview/subject-prep", response_model=SubjectPrepResponse)
 async def generate_subject_prep(request: SubjectPrepRequest):
     print(f"[/interview/subject-prep] incoming request for subject: {request.subject}")
+    started_at = time.perf_counter()
 
     subject_key = request.subject.lower().strip()
     is_problem_solving = subject_key in ['problem solving', 'art of problem solving', 'aops']
@@ -1627,6 +1746,7 @@ async def generate_subject_prep(request: SubjectPrepRequest):
     try:
         print(f"[/interview/subject-prep] Calling OpenAI API for {request.subject}...")
         try:
+            llm_started_at = time.perf_counter()
             response = client.chat.completions.create(
                 model="gpt-4",
                 messages=[
@@ -1635,10 +1755,14 @@ async def generate_subject_prep(request: SubjectPrepRequest):
                 ],
                 temperature=0.3
             )
+            print(
+                f'[timing] subject-prep.llm subject="{request.subject}" mode={"problem-solving" if is_problem_solving else "subject-prep"} model="gpt-4" duration_ms={round((time.perf_counter() - llm_started_at) * 1000)}'
+            )
         except Exception as api_error:
             print(f"[/interview/subject-prep] gpt-4 API error: {api_error}")
             print(f"[/interview/subject-prep] Trying fallback to gpt-3.5-turbo...")
             try:
+                llm_started_at = time.perf_counter()
                 response = client.chat.completions.create(
                     model="gpt-3.5-turbo",
                     messages=[
@@ -1646,6 +1770,9 @@ async def generate_subject_prep(request: SubjectPrepRequest):
                         {"role": "user", "content": context}
                     ],
                     temperature=0.3
+                )
+                print(
+                    f'[timing] subject-prep.llm subject="{request.subject}" mode={"problem-solving" if is_problem_solving else "subject-prep"} model="gpt-3.5-turbo" duration_ms={round((time.perf_counter() - llm_started_at) * 1000)}'
                 )
             except Exception as fallback_error:
                 print(f"[/interview/subject-prep] gpt-3.5-turbo API error: {fallback_error}")
@@ -1668,6 +1795,7 @@ async def generate_subject_prep(request: SubjectPrepRequest):
         try:
             import json
             import re
+            parse_started_at = time.perf_counter()
             
             print(f"[/interview/subject-prep] First 500 chars of response: {result_text[:500]}")
             
@@ -1699,8 +1827,14 @@ async def generate_subject_prep(request: SubjectPrepRequest):
 
             result = json.loads(cleaned_text)
             print(f"[/interview/subject-prep] Successfully parsed JSON response")
+            print(
+                f'[timing] subject-prep.parse subject="{request.subject}" mode={"problem-solving" if is_problem_solving else "subject-prep"} duration_ms={round((time.perf_counter() - parse_started_at) * 1000)}'
+            )
             
             if "case_studies" not in result:
+                print(
+                    f'[timing] subject-prep.total subject="{request.subject}" mode={"problem-solving" if is_problem_solving else "subject-prep"} status=ok duration_ms={round((time.perf_counter() - started_at) * 1000)}'
+                )
                 return SubjectPrepResponse(**result)
 
             case_studies = result.get("case_studies", [])
@@ -1736,6 +1870,9 @@ async def generate_subject_prep(request: SubjectPrepRequest):
                 "key_learning_points": result.get("key_learning_points", []),
                 "common_mistakes": result.get("common_mistakes", [])
             }
+            print(
+                f'[timing] subject-prep.total subject="{request.subject}" mode={"problem-solving" if is_problem_solving else "subject-prep"} status=ok duration_ms={round((time.perf_counter() - started_at) * 1000)}'
+            )
             return SubjectPrepResponse(**result_with_subject)
             
         except json.JSONDecodeError as parse_error:
@@ -1749,6 +1886,9 @@ async def generate_subject_prep(request: SubjectPrepRequest):
     
     except Exception as e:
         print(f"[/interview/subject-prep] Error: {type(e).__name__}: {e}")
+        print(
+            f'[timing] subject-prep.total subject="{request.subject}" mode={"problem-solving" if is_problem_solving else "subject-prep"} status=error duration_ms={round((time.perf_counter() - started_at) * 1000)}'
+        )
         raise
 
 
