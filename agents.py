@@ -45,6 +45,19 @@ def get_agent1_llm_and_prompt(
         "number of questions - 8 //Fixed value",
         f"number of questions - {resolved_total_questions} //Requested value",
     )
+    if (
+        resolved_total_questions <= 8
+        and normalized_solution_language == "python"
+    ):
+        system_prompt += """
+
+FAST MODE ADDENDUM FOR PYTHON:
+- Keep the case study focused on one shared dataset reused across all questions.
+- Keep business context concise and practical.
+- Keep problem statements short and explicit.
+- Prefer a single coherent data-analysis scenario over multiple disconnected mini-scenarios.
+- Do not reduce dataset richness below what is required for later filters, groupbys, joins, and time-based questions.
+- Keep expected skills and surrounding prose minimal while preserving question quality."""
     prompt = ChatPromptTemplate.from_messages([
         ("system", system_prompt),
         ("user", AGENT1_USER_TEMPLATE),
@@ -113,6 +126,18 @@ FAST MODE ADDENDUM:
 - Avoid unnecessary extra tables when one table is sufficient.
 - Reuse the same compact dataset across questions whenever possible.
 - Favor the simplest valid solution that matches the expected output columns."""
+    if resolved_total_questions <= 8 and normalized_subject == "python":
+        system_prompt += """
+
+FAST MODE ADDENDUM FOR PYTHON:
+- Create one shared dataset that supports all questions; do not create separate mini-datasets per answer.
+- Keep the SQL and pandas dataset blocks perfectly aligned, but concise.
+- Prefer roughly 14-24 seeded rows total unless more are strictly required by the questions.
+- Keep the `# @DATA_CREATION_PYTHON` block minimal: only essential imports, one canonical CSV/DataFrame definition per table, and concise save/load steps.
+- Keep each `# @ANSWER_Qn` block concise, direct, and free of extra explanation or comments.
+- Prefer simple pandas operations that exactly match the expected output columns.
+- Do not reduce data coverage needed for grouping, filtering, date-based analysis, joins, or threshold questions.
+- Return only the required tagged blocks and nothing else."""
     prompt = ChatPromptTemplate.from_messages([
         ("system", system_prompt),
         ("user", AGENT2_USER_TEMPLATE),
